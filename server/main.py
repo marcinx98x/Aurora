@@ -19,10 +19,12 @@ from __future__ import annotations
 import os
 import re
 import json
+import difflib
 import socket
 import sqlite3
 import threading
 import time
+import unicodedata
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -316,6 +318,134 @@ def _parse_lrc(lrc: str) -> list[dict[str, Any]]:
     return out
 
 
+_LYRICS_MATCH_VERSION = 2
+
+
+def _match_text(value: str) -> str:
+    """Normalize display text for conservative lyrics identity matching."""
+    value = _clean(value).casefold().replace("&", " and ")
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    return re.sub(r"[^\w]+", " ", value, flags=re.UNICODE).strip()
+
+
+def _match_artist(value: str) -> str:
+    value = re.sub(
+        r"(?i)\s*[-–—]?\s*(topic|vevo|official|official artist channel)\s*$",
+        "",
+        value,
+    )
+    return _match_text(value)
+
+
+def _text_similarity(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    left_tokens, right_tokens = set(left.split()), set(right.split())
+    overlap = (
+        2 * len(left_tokens & right_tokens)
+        / (len(left_tokens) + len(right_tokens))
+    )
+    sequence = difflib.SequenceMatcher(None, left, right).ratio()
+    return 0.65 * sequence + 0.35 * overlap
+
+
+def _lyric_identities(title: str, artist: str) -> list[tuple[str, str]]:
+    """Likely (track, artist) pairs from YouTube-style metadata."""
+    identities = [(_clean(title), artist)]
+    split = re.match(r"^\s*(.+?)\s+[-–—]\s+(.+?)\s*$", title)
+    if split:
+        inferred_artist, inferred_title = split.groups()
+        identities.insert(0, (_clean(inferred_title), inferred_artist))
+
+    unique: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for track_name, artist_name in identities:
+        key = (_match_text(track_name), _match_artist(artist_name))
+        if key[0] and key not in seen:
+            seen.add(key)
+            unique.append((track_name, artist_name))
+    return unique
+
+
+def _lyric_hit_score(
+    hit: dict[str, Any],
+    identities: list[tuple[str, str]],
+    duration: int,
+) -> float | None:
+    candidate_title = _match_text(str(hit.get("trackName") or ""))
+    candidate_artist = _match_artist(str(hit.get("artistName") or ""))
+    candidate_duration = int(float(hit.get("duration") or 0))
+
+    duration_score = 0.0
+    if duration > 0 and candidate_duration > 0:
+        delta = abs(duration - candidate_duration)
+        tolerance = max(8, min(18, round(duration * 0.08)))
+        if delta > tolerance:
+            return None
+        duration_score = 1 - delta / tolerance
+
+    best: float | None = None
+    for title, artist in identities:
+        title_score = _text_similarity(_match_text(title), candidate_title)
+        if title_score < 0.78:
+            continue
+
+        expected_artist = _match_artist(artist)
+        artist_score = _text_similarity(expected_artist, candidate_artist)
+        if expected_artist and candidate_artist and artist_score < 0.45:
+            # Only allow unreliable YouTube channel metadata to disagree when
+            # both title and duration are virtually exact.
+            if title_score < 0.94 or duration_score < 0.85:
+                continue
+        elif expected_artist and not candidate_artist and title_score < 0.94:
+            continue
+
+        # Synced lyrics are a tie-breaker, never a substitute for identity.
+        score = (
+            0.70 * title_score
+            + 0.22 * artist_score
+            + 0.08 * duration_score
+            + (0.02 if hit.get("syncedLyrics") else 0.0)
+        )
+        best = score if best is None else max(best, score)
+    return best
+
+
+def _select_lyric_hit(
+    hits: list[dict[str, Any]],
+    identities: list[tuple[str, str]],
+    duration: int,
+) -> dict[str, Any] | None:
+    scored = [
+        (score, hit)
+        for hit in hits
+        if (score := _lyric_hit_score(hit, identities, duration)) is not None
+    ]
+    return max(scored, key=lambda item: item[0])[1] if scored else None
+
+
+def _lyrics_response(hit: dict[str, Any] | None) -> dict[str, Any]:
+    if not hit:
+        return {
+            "synced": [], "plain": "", "source": "lrclib", "found": False,
+            "matchVersion": _LYRICS_MATCH_VERSION,
+        }
+    synced = _parse_lrc(hit.get("syncedLyrics") or "")
+    return {
+        "synced": synced,
+        "plain": hit.get("plainLyrics") or "",
+        "found": bool(synced or hit.get("plainLyrics")),
+        "source": "lrclib",
+        "matchVersion": _LYRICS_MATCH_VERSION,
+        "matchedTitle": hit.get("trackName") or "",
+        "matchedArtist": hit.get("artistName") or "",
+        "matchedDuration": int(float(hit.get("duration") or 0)),
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, bool]:
     return {"ok": True}
@@ -606,45 +736,52 @@ def suggest(q: str) -> list[str]:
 
 @app.get("/lyrics")
 def lyrics(title: str, artist: str = "", duration: int = 0) -> dict[str, Any]:
-    """Real lyrics from lrclib.net (synced LRC when available, else plain)."""
-    name = _clean(title)
+    """Return lyrics only when title, artist and duration identify the track."""
+    identities = _lyric_identities(title, artist)
     with httpx.Client(timeout=12, follow_redirects=True) as cx:
-        hit: dict[str, Any] | None = None
-        # 1) exact get (best for synced + correct match)
-        if artist:
+        # Exact lookups are cheapest and safest. YouTube commonly formats a
+        # title as "Artist - Track", so also try that inferred identity.
+        for track_name, artist_name in identities:
+            if not artist_name:
+                continue
             try:
-                r = cx.get("https://lrclib.net/api/get", params={
-                    "track_name": name,
-                    "artist_name": artist,
-                    "duration": duration,
-                })
+                params: dict[str, Any] = {
+                    "track_name": track_name,
+                    "artist_name": artist_name,
+                }
+                if duration > 0:
+                    params["duration"] = duration
+                r = cx.get("https://lrclib.net/api/get", params=params)
                 if r.status_code == 200:
-                    hit = r.json()
+                    exact = _select_lyric_hit([r.json()], identities, duration)
+                    if exact:
+                        return _lyrics_response(exact)
             except Exception:  # noqa: BLE001
-                hit = None
-        # 2) fuzzy search fallback
-        if not hit:
+                pass
+
+        # Fuzzy search is allowed only as candidate discovery. Every result is
+        # scored below; the first LRCLIB result is never trusted implicitly.
+        candidates: dict[str, dict[str, Any]] = {}
+        for track_name, artist_name in identities:
             try:
-                q = f"{name} {artist}".strip()
-                r = cx.get("https://lrclib.net/api/search",
-                           params={"q": q})
+                query = f"{track_name} {artist_name}".strip()
+                r = cx.get("https://lrclib.net/api/search", params={"q": query})
                 arr = r.json() if r.status_code == 200 else []
-                # prefer a result that actually has synced lyrics
-                arr.sort(key=lambda x: 0 if x.get("syncedLyrics") else 1)
-                hit = arr[0] if arr else None
+                for candidate in arr if isinstance(arr, list) else []:
+                    if not isinstance(candidate, dict):
+                        continue
+                    key = str(candidate.get("id") or (
+                        candidate.get("trackName"),
+                        candidate.get("artistName"),
+                        candidate.get("duration"),
+                    ))
+                    candidates[key] = candidate
             except Exception:  # noqa: BLE001
-                hit = None
+                pass
 
-    if not hit:
-        return {"synced": [], "plain": "", "source": "lrclib", "found": False}
-
-    synced = _parse_lrc(hit.get("syncedLyrics") or "")
-    return {
-        "synced": synced,
-        "plain": hit.get("plainLyrics") or "",
-        "found": bool(synced or hit.get("plainLyrics")),
-        "source": "lrclib",
-    }
+    return _lyrics_response(
+        _select_lyric_hit(list(candidates.values()), identities, duration)
+    )
 
 
 _CACHE_DIR = os.path.abspath(os.environ.get(

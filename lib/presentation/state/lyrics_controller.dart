@@ -36,12 +36,18 @@ final lyricsProvider = FutureProvider.autoDispose<LyricsResult>((ref) async {
 
   // Offline cache (saved when the track was downloaded).
   final cached = ref.read(localStoreProvider).lyrics(track.id);
-  if (cached != null) return _parse(cached);
+  // Older cache entries were produced before the server validated title,
+  // artist and duration, so they may belong to another song.
+  if (cached?['matchVersion'] == 2) return _parse(cached!);
 
   final res = await _dio.get('/lyrics', queryParameters: {
     'title': track.title,
     'artist': track.artist,
     'duration': track.duration.inSeconds,
   });
-  return _parse(res.data as Map<dynamic, dynamic>);
+  final data = Map<String, dynamic>.from(res.data as Map);
+  if (data['found'] == true && data['matchVersion'] == 2) {
+    await ref.read(localStoreProvider).saveLyrics(track.id, data);
+  }
+  return _parse(data);
 });

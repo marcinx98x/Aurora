@@ -45,5 +45,59 @@ class ParseRangeTest(unittest.TestCase):
             self.assertEqual(caught.exception.headers, {"Content-Range": "bytes */10"})
 
 
+class LyricsMatchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.identities = main._lyric_identities(
+            "Adele - Hello (Official Video)", "AdeleVEVO"
+        )
+
+    def test_selects_identity_match_instead_of_first_synced_result(self) -> None:
+        wrong = {
+            "id": 1,
+            "trackName": "Hello",
+            "artistName": "Lionel Richie",
+            "duration": 241,
+            "syncedLyrics": "[00:01.00]Wrong song",
+        }
+        correct = {
+            "id": 2,
+            "trackName": "Hello",
+            "artistName": "Adele",
+            "duration": 295,
+            "plainLyrics": "Correct song",
+        }
+
+        selected = main._select_lyric_hit(
+            [wrong, correct], self.identities, duration=295
+        )
+
+        self.assertIs(selected, correct)
+
+    def test_rejects_wrong_version_by_duration(self) -> None:
+        live_version = {
+            "trackName": "Hello",
+            "artistName": "Adele",
+            "duration": 360,
+            "syncedLyrics": "[00:01.00]Live version",
+        }
+
+        self.assertIsNone(main._select_lyric_hit(
+            [live_version], self.identities, duration=295
+        ))
+
+    def test_accepts_topic_channel_artist(self) -> None:
+        identities = main._lyric_identities(
+            "Blinding Lights", "The Weeknd - Topic"
+        )
+        hit = {
+            "trackName": "Blinding Lights",
+            "artistName": "The Weeknd",
+            "duration": 200,
+            "syncedLyrics": "[00:01.00]Yeah",
+        }
+
+        self.assertIs(main._select_lyric_hit([hit], identities, 200), hit)
+
+
 if __name__ == "__main__":
     unittest.main()

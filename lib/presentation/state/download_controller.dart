@@ -163,8 +163,10 @@ class DownloadController extends Notifier<Map<String, DownloadJob>> {
           'duration': t.duration.inSeconds,
         });
         if (r.data is Map) {
-          await store.saveLyrics(
-              t.id, Map<String, dynamic>.from(r.data as Map));
+          final lyrics = Map<String, dynamic>.from(r.data as Map);
+          if (lyrics['found'] == true && lyrics['matchVersion'] == 2) {
+            await store.saveLyrics(t.id, lyrics);
+          }
         }
       } catch (_) {}
 

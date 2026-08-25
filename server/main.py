@@ -796,23 +796,30 @@ def _enforce_cache_limit(protected_video_id: str) -> None:
                 continue
 
 
-def _normalize_cache(video_id: str, path: str) -> str | None:
-    """yt-dlp writes <id>.<ext> (m4a/mp4). Rename the produced file to the
-    canonical .mp4 cache path and return it (None if nothing was produced)."""
+def _promote_download(download_dir: str, path: str) -> str | None:
+    """Atomically publish a completed yt-dlp file into the stream cache.
+
+    yt-dlp leaves non-empty .part/.ytdl files behind when YouTube or a proxy
+    disconnects. The old glob accepted those files as playable audio, which
+    made an intermittent resolver failure poison every later play from cache.
+    Downloads now happen in an isolated directory and only final media files
+    are moved to the canonical path.
+    """
     import glob
-    if os.path.exists(path) and os.path.getsize(path) > 0:
-        return path
-    hits = [
-        p for p in glob.glob(os.path.join(_CACHE_DIR, f"{video_id}.*"))
-        if os.path.getsize(p) > 0
+    candidates: list[str] = []
+    for extension in ("m4a", "mp4"):
+        candidates.extend(glob.glob(os.path.join(download_dir, f"*.{extension}")))
+    candidates = [
+        candidate for candidate in candidates
+        if os.path.isfile(candidate) and os.path.getsize(candidate) > 0
     ]
-    if not hits:
+    if not candidates:
         return None
-    try:
-        os.replace(hits[0], path)
-        return path
-    except Exception:  # noqa: BLE001
-        return hits[0]
+    # There should be one file, but prefer the largest completed media file if
+    # an extractor happens to leave more than one final format behind.
+    selected = max(candidates, key=os.path.getsize)
+    os.replace(selected, path)
+    return path
 
 
 def _ensure_local(video_id: str) -> str:
@@ -837,6 +844,8 @@ def _ensure_local(video_id: str) -> str:
         cached = _cache_get(video_id)
         if cached:
             return cached
+        import shutil
+        import tempfile
         os.makedirs(_CACHE_DIR, exist_ok=True)
         url = f"https://www.youtube.com/watch?v={video_id}"
         # Retry with a fresh residential IP each attempt (a flagged exit node
@@ -851,6 +860,9 @@ def _ensure_local(video_id: str) -> str:
         # player's ~8s connect timeout in the common case.
         used_proxies: set[str] = set()
         for attempt in range(6):
+            download_dir = tempfile.mkdtemp(
+                prefix=f".{video_id}-", dir=_CACHE_DIR
+            )
             opts = {
                 # Audio-only, m4a/mp4 only (itag 140 ≈ 4MB, then any m4a audio,
                 # last resort itag 18 360p ≈ 3MB). No bare "bestaudio" (could be
@@ -871,7 +883,7 @@ def _ensure_local(video_id: str) -> str:
                         "player_client": ["default", "mweb", "web_embedded"]
                     }
                 },
-                "outtmpl": os.path.join(_CACHE_DIR, f"{video_id}.%(ext)s"),
+                "outtmpl": os.path.join(download_dir, f"{video_id}.%(ext)s"),
                 "skip_download": False,
                 "overwrites": True,
                 "retries": 1,
@@ -890,9 +902,9 @@ def _ensure_local(video_id: str) -> str:
                 # clears the bot wall.
                 with _ydl(opts, use_cookies=True) as ydl:
                     ydl.download([url])
-                # The real extension (.m4a/.mp4) varies; normalize to .mp4 so
-                # the cache key + audio/mp4 content-type are stable.
-                got = _normalize_cache(video_id, path)
+                # The real extension (.m4a/.mp4) varies. Publish only after a
+                # complete download so stream readers never see partial bytes.
+                got = _promote_download(download_dir, path)
                 if got:
                     if proxy:
                         _record_good(proxy)
@@ -903,6 +915,8 @@ def _ensure_local(video_id: str) -> str:
                 last_err = e
                 if proxy:
                     _mark_bad(proxy)
+            finally:
+                shutil.rmtree(download_dir, ignore_errors=True)
             # brief backoff before the next attempt
             if attempt < 5:
                 time.sleep(0.5)
@@ -915,15 +929,27 @@ def _ensure_local(video_id: str) -> str:
 
 
 def _parse_range(rng: str, size: int) -> tuple[int, int]:
-    m = re.match(r"bytes=(\d*)-(\d*)", rng or "")
-    if not m:
-        return 0, size - 1
+    m = re.fullmatch(r"bytes=(\d*)-(\d*)", (rng or "").strip())
+    if size <= 0 or not m or (not m.group(1) and not m.group(2)):
+        raise HTTPException(
+            416, "invalid byte range", headers={"Content-Range": f"bytes */{size}"}
+        )
     a, b = m.group(1), m.group(2)
     if a == "":  # suffix range: last N bytes
-        n = int(b or 0)
+        n = int(b)
+        if n <= 0:
+            raise HTTPException(
+                416, "invalid byte range",
+                headers={"Content-Range": f"bytes */{size}"},
+            )
         return max(0, size - n), size - 1
     start = int(a)
     end = int(b) if b else size - 1
+    if start >= size or end < start:
+        raise HTTPException(
+            416, "range not satisfiable",
+            headers={"Content-Range": f"bytes */{size}"},
+        )
     return start, min(end, size - 1)
 
 

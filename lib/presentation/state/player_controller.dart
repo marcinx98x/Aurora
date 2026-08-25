@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:audio_session/audio_session.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
@@ -7,7 +8,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:palette_generator/palette_generator.dart';
-import '../../core/config/app_config.dart';
 import '../../core/notifications/notification_service.dart';
 import '../../core/theme/dynamic_palette.dart';
 import '../../data/datasources/yt_stream_resolver.dart';
@@ -50,10 +50,9 @@ class PlayerState {
     this.sleepAtTrackEnd = false,
   });
 
-  Track? get current =>
-      (queue.isNotEmpty && index >= 0 && index < queue.length)
-          ? queue[index]
-          : null;
+  Track? get current => (queue.isNotEmpty && index >= 0 && index < queue.length)
+      ? queue[index]
+      : null;
 
   bool get hasTrack => current != null;
 
@@ -106,19 +105,16 @@ class PlayerState {
 /// ConcatenatingAudioSource so the OS lock-screen / notification gets real
 /// next / previous / seek controls and playback is gapless.
 class PlayerController extends Notifier<PlayerState> {
-  late final ja.AudioPlayer _player;
-  late final ja.AndroidEqualizer equalizer; // exposed to the EQ screen
+  late ja.AudioPlayer _player;
+  late ja.AndroidEqualizer equalizer; // exposed to the EQ screen
+  int _playerGeneration = 0;
   Timer? _sleepTimer;
   DateTime? _sleepEnd;
   double _baseVolume = 1.0;
 
   @override
   PlayerState build() {
-    equalizer = ja.AndroidEqualizer();
-    _player = ja.AudioPlayer(
-      audioPipeline: ja.AudioPipeline(androidAudioEffects: [equalizer]),
-    );
-    _wireStreams();
+    _createPlayer();
     _wireAudioSession();
     ref.onDispose(() {
       _sleepTimer?.cancel();
@@ -126,6 +122,25 @@ class PlayerController extends Notifier<PlayerState> {
       _player.dispose();
     });
     return const PlayerState();
+  }
+
+  void _createPlayer() {
+    equalizer = ja.AndroidEqualizer();
+    _player = ja.AudioPlayer(
+      audioPipeline: ja.AudioPipeline(androidAudioEffects: [equalizer]),
+    );
+    _wireStreams(_player, ++_playerGeneration);
+  }
+
+  /// Replace a native player that stopped accepting sources. The replacement
+  /// is assigned synchronously, so another tap can immediately use it while
+  /// the broken instance is being disposed in the background.
+  void _recreatePlayer() {
+    final broken = _player;
+    _createPlayer();
+    unawaited(broken.dispose());
+    unawaited(_player.setVolume(_baseVolume));
+    unawaited(_player.setSpeed(state.speed));
   }
 
   Future<void> _wireAudioSession() async {
@@ -145,8 +160,11 @@ class PlayerController extends Notifier<PlayerState> {
   String? _lastTickId;
   int _pendingSeconds = 0;
 
-  void _wireStreams() {
-    _player.positionStream.listen((p) {
+  void _wireStreams(ja.AudioPlayer player, int generation) {
+    bool isCurrentPlayer() => generation == _playerGeneration;
+
+    player.positionStream.listen((p) {
+      if (!isCurrentPlayer()) return;
       if (!state.isLoading) state = state.copyWith(position: p);
       _maybeFadeOut();
       final id = state.current?.id;
@@ -165,20 +183,24 @@ class PlayerController extends Notifier<PlayerState> {
       _lastTickId = id;
       _lastTick = p;
     });
-    _player.durationStream.listen((d) {
+    player.durationStream.listen((d) {
+      if (!isCurrentPlayer()) return;
       if (d != null) state = state.copyWith(duration: d);
     });
-    _player.playerStateStream.listen((ps) {
+    player.playerStateStream.listen((ps) {
+      if (!isCurrentPlayer()) return;
       state = state.copyWith(isPlaying: ps.playing);
       if (ps.processingState == ja.ProcessingState.completed) _onComplete();
     });
     // Handle skip buttons from the lock-screen / notification. When the user
     // taps next/prev there, just_audio changes the index inside the
     // ConcatenatingAudioSource. We translate that into our queue navigation.
-    _player.currentIndexStream.listen((newIdx) {
+    player.currentIndexStream.listen((newIdx) {
+      if (!isCurrentPlayer()) return;
       if (newIdx == null || state.isLoading) return;
       // Ignore index changes caused by our own setAudioSource
-      if (DateTime.now().difference(_lastSourceSetTime) < const Duration(milliseconds: 800)) {
+      if (DateTime.now().difference(_lastSourceSetTime) <
+          const Duration(milliseconds: 800)) {
         return;
       }
       if (newIdx > _concatBaseIndex) {
@@ -219,6 +241,12 @@ class PlayerController extends Notifier<PlayerState> {
   Future<void> toggle() async {
     if (_player.playing) {
       await _player.pause();
+    } else if (_player.processingState == ja.ProcessingState.idle &&
+        state.hasTrack) {
+      // After a native/source failure the controller deliberately swaps in a
+      // clean player. Let Play reload the selected track instead of calling
+      // play() on that new player's empty source.
+      await _loadCurrent(autoplay: true);
     } else {
       await _player.play();
     }
@@ -287,9 +315,73 @@ class PlayerController extends Notifier<PlayerState> {
       if (isNumeric) {
         return Uri.parse('content://media/external/audio/media/${track.id}');
       }
-      return Uri.file(track.localPath!);
+      final path = track.localPath!;
+      if (path.startsWith('content://')) return Uri.parse(path);
+      if (await File(path).exists()) return Uri.file(path);
+
+      // A restored download record can outlive its app-private file. YouTube
+      // IDs are safe to resolve remotely; device-only numeric IDs were handled
+      // above and must never be sent to the server.
+      if (RegExp(r'^[A-Za-z0-9_-]{6,64}$').hasMatch(track.id)) {
+        return ref.read(musicRepositoryProvider).resolveStream(track);
+      }
+      throw StateError('Local audio file no longer exists: $path');
     }
     return await ref.read(musicRepositoryProvider).resolveStream(track);
+  }
+
+  Future<({ja.AudioSource source, int initialIndex})> _sourceWindow(
+    Track track,
+    Uri uri,
+    int token,
+  ) async {
+    final q = state.queue;
+    final idx = state.index;
+    final sources = <ja.AudioSource>[];
+    var initialIndex = 0;
+
+    // These headers are needed only when a googlevideo URL is played directly.
+    // Keep requests to Aurora's own Range server free of YouTube-specific
+    // headers; reverse proxies can then handle them as normal audio requests.
+    Map<String, String>? headersFor(Uri value) =>
+        value.host.endsWith('.googlevideo.com') ? ytStreamHeaders : null;
+
+    ja.AudioSource item(Track value, Uri valueUri) => ja.AudioSource.uri(
+          valueUri,
+          tag: _media(value),
+          headers: headersFor(valueUri),
+        );
+
+    if (q.length == 1) {
+      sources.add(item(track, uri));
+    } else {
+      if (idx > 0) {
+        final previous = q[idx - 1];
+        final previousUri = await _getTrackUri(previous);
+        if (token != _loadToken) {
+          throw ja.PlayerInterruptedException('superseded load');
+        }
+        sources.add(item(previous, previousUri));
+        initialIndex = 1;
+      }
+      sources.add(item(track, uri));
+      if (idx < q.length - 1) {
+        final next = q[idx + 1];
+        final nextUri = await _getTrackUri(next);
+        if (token != _loadToken) {
+          throw ja.PlayerInterruptedException('superseded load');
+        }
+        sources.add(item(next, nextUri));
+      }
+    }
+
+    return (
+      source: ja.ConcatenatingAudioSource(
+        useLazyPreparation: true,
+        children: sources,
+      ),
+      initialIndex: initialIndex,
+    );
   }
 
   // Resolves the current track on-device (residential IP) and plays it.
@@ -304,48 +396,43 @@ class PlayerController extends Notifier<PlayerState> {
       final uri = await _getTrackUri(track);
       if (token != _loadToken) return;
 
-      // Build a 3-item ConcatenatingAudioSource (prev / current / next) so
-      // just_audio_background shows skip-prev and skip-next on the lock-screen
-      // and notification. The window is rebuilt on every track change.
-      final q = state.queue;
-      final idx = state.index;
-      final sources = <ja.AudioSource>[];
-      int initialIndex = 0;
+      // Stop first so a slow server response from the previous tap cannot
+      // finish later and replace the newly selected song.
+      try {
+        await _player.stop();
+      } catch (_) {
+        if (token != _loadToken) return;
+        _recreatePlayer();
+      }
+      if (token != _loadToken) return;
 
-      Map<String, String>? _headersFor(Uri u) =>
-          u.scheme == 'http' || u.scheme == 'https' ? ytStreamHeaders : null;
-
-      if (q.length == 1) {
-        // Single track — no neighbours
-        sources.add(ja.AudioSource.uri(uri,
-            tag: _media(track), headers: _headersFor(uri)));
-      } else {
-        // Previous track (placeholder — will be replaced when actually played)
-        if (idx > 0) {
-          final prev = q[idx - 1];
-          final prevUri = await _getTrackUri(prev);
-          sources.add(ja.AudioSource.uri(prevUri,
-              tag: _media(prev), headers: _headersFor(prevUri)));
-          initialIndex = 1;
-        }
-        // Current track
-        sources.add(ja.AudioSource.uri(uri,
-            tag: _media(track), headers: _headersFor(uri)));
-        // Next track (placeholder)
-        if (idx < q.length - 1) {
-          final nxt = q[idx + 1];
-          final nxtUri = await _getTrackUri(nxt);
-          sources.add(ja.AudioSource.uri(nxtUri,
-              tag: _media(nxt), headers: _headersFor(nxtUri)));
+      // A resolver miss can be transient (a bad YouTube exit node, or a CDN
+      // Range connection closing during preparation). Rebuild the source and
+      // retry remote tracks; local-file errors are deterministic.
+      final attempts = track.localPath == null ? 3 : 2;
+      for (var attempt = 0; attempt < attempts; attempt++) {
+        try {
+          final window = await _sourceWindow(track, uri, token);
+          if (token != _loadToken) return;
+          _concatBaseIndex = window.initialIndex;
+          _lastSourceSetTime = DateTime.now();
+          await _player.setAudioSource(
+            window.source,
+            initialIndex: window.initialIndex,
+          );
+          break;
+        } catch (_) {
+          if (token != _loadToken) return;
+          if (attempt == attempts - 1) rethrow;
+          // setAudioSource failures can leave ExoPlayer unable to accept the
+          // next source. Retry on a fresh native instance instead of forcing
+          // the user to restart the whole app.
+          _recreatePlayer();
+          await Future<void>.delayed(
+              Duration(milliseconds: 350 * (attempt + 1)));
         }
       }
 
-      _concatBaseIndex = initialIndex;
-      _lastSourceSetTime = DateTime.now();
-      await _player.setAudioSource(
-        ja.ConcatenatingAudioSource(children: sources),
-        initialIndex: initialIndex,
-      );
       if (token != _loadToken) return;
       state = state.copyWith(isLoading: false);
       if (autoplay) {
@@ -354,10 +441,14 @@ class PlayerController extends Notifier<PlayerState> {
       } else {
         await _player.setVolume(_baseVolume);
       }
+      if (token != _loadToken) return;
       _applyPalette(track);
     } catch (e, st) {
       debugPrint('[player] load failed: $e\n$st');
       if (token == _loadToken) {
+        // Keep the controller usable even when this particular local file or
+        // remote stream is invalid. The next selection starts cleanly.
+        _recreatePlayer();
         state = state.copyWith(isLoading: false, error: 'Playback failed');
       }
     }
@@ -490,8 +581,7 @@ class PlayerController extends Notifier<PlayerState> {
       return;
     }
     _sleepEnd = DateTime.now().add(duration);
-    state =
-        state.copyWith(sleepRemaining: duration, sleepAtTrackEnd: false);
+    state = state.copyWith(sleepRemaining: duration, sleepAtTrackEnd: false);
     _sleepTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       final left = _sleepEnd!.difference(DateTime.now());
       if (left <= Duration.zero) {

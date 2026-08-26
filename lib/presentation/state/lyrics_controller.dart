@@ -16,6 +16,9 @@ LyricsResult _parse(Map<dynamic, dynamic> data) {
     synced: synced,
     plain: (data['plain'] as String?) ?? '',
     found: data['found'] == true || synced.isNotEmpty,
+    timingReliable: data['timingReliable'] != false,
+    timingIssue: data['timingIssue'] as String?,
+    suggestedOffset: (data['suggestedOffset'] as num?)?.toDouble(),
   );
 }
 
@@ -28,6 +31,20 @@ final _dio = Dio(BaseOptions(
       : null,
 ));
 
+String _offsetKey(String trackId) => 'lyrics_offset_$trackId';
+
+/// Per-track manual correction in milliseconds. Positive values delay lyrics.
+final lyricsOffsetProvider = StateProvider.autoDispose.family<int, String>(
+  (ref, trackId) =>
+      ref.read(localStoreProvider).number(_offsetKey(trackId)) ?? 0,
+);
+
+Future<void> setLyricsOffset(WidgetRef ref, String trackId, int millis) async {
+  final value = millis.clamp(-120000, 120000);
+  ref.read(lyricsOffsetProvider(trackId).notifier).state = value;
+  await ref.read(localStoreProvider).setNumber(_offsetKey(trackId), value);
+}
+
 /// Lyrics for the current track. Uses offline-saved lyrics first (downloaded
 /// alongside the track), then falls back to the lrclib resolver.
 final lyricsProvider = FutureProvider.autoDispose<LyricsResult>((ref) async {
@@ -38,7 +55,7 @@ final lyricsProvider = FutureProvider.autoDispose<LyricsResult>((ref) async {
   final cached = ref.read(localStoreProvider).lyrics(track.id);
   // Older cache entries were produced before the server validated title,
   // artist and duration, so they may belong to another song.
-  if (cached?['matchVersion'] == 2) return _parse(cached!);
+  if (cached?['matchVersion'] == 3) return _parse(cached!);
 
   final res = await _dio.get('/lyrics', queryParameters: {
     'title': track.title,
@@ -46,7 +63,7 @@ final lyricsProvider = FutureProvider.autoDispose<LyricsResult>((ref) async {
     'duration': track.duration.inSeconds,
   });
   final data = Map<String, dynamic>.from(res.data as Map);
-  if (data['found'] == true && data['matchVersion'] == 2) {
+  if (data['found'] == true && data['matchVersion'] == 3) {
     await ref.read(localStoreProvider).saveLyrics(track.id, data);
   }
   return _parse(data);

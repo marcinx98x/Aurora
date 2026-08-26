@@ -164,7 +164,7 @@ class DownloadController extends Notifier<Map<String, DownloadJob>> {
         });
         if (r.data is Map) {
           final lyrics = Map<String, dynamic>.from(r.data as Map);
-          if (lyrics['found'] == true && lyrics['matchVersion'] == 2) {
+          if (lyrics['found'] == true && lyrics['matchVersion'] == 3) {
             await store.saveLyrics(t.id, lyrics);
           }
         }

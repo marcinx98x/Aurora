@@ -99,5 +99,29 @@ class LyricsMatchTest(unittest.TestCase):
         self.assertIs(main._select_lyric_hit([hit], identities, 200), hit)
 
 
+class LyricsTimingTest(unittest.TestCase):
+    def test_accepts_timestamps_that_fit_the_track(self) -> None:
+        synced = [{"time": 1.2}, {"time": 396.6}]
+
+        self.assertEqual(main._lyrics_timing(synced, 405), (True, None, None))
+
+    def test_suggests_delay_for_probable_video_intro(self) -> None:
+        synced = [{"time": 1.2}, {"time": 396.6}]
+
+        reliable, issue, offset = main._lyrics_timing(synced, 489)
+
+        self.assertFalse(reliable)
+        self.assertEqual(issue, "possible_video_intro")
+        self.assertAlmostEqual(offset, 84.4)
+
+    def test_rejects_timestamps_beyond_short_edit(self) -> None:
+        synced = [{"time": 1.2}, {"time": 396.6}]
+
+        self.assertEqual(
+            main._lyrics_timing(synced, 365),
+            (False, "timestamps_outside_track", None),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

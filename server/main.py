@@ -318,7 +318,7 @@ def _parse_lrc(lrc: str) -> list[dict[str, Any]]:
     return out
 
 
-_LYRICS_MATCH_VERSION = 2
+_LYRICS_MATCH_VERSION = 3
 
 
 def _match_text(value: str) -> str:
@@ -427,13 +427,45 @@ def _select_lyric_hit(
     return max(scored, key=lambda item: item[0])[1] if scored else None
 
 
-def _lyrics_response(hit: dict[str, Any] | None) -> dict[str, Any]:
+def _lyrics_timing(
+    synced: list[dict[str, Any]], duration: int
+) -> tuple[bool, str | None, float | None]:
+    """Assess whether LRC timestamps plausibly fit this particular version.
+
+    LRCLIB can have separate long/short video metadata pointing to the exact
+    same album-version LRC. Metadata matching alone therefore isn't enough.
+    """
+    if not synced or duration <= 0:
+        return True, None, None
+    first = float(synced[0]["time"])
+    last = float(synced[-1]["time"])
+    if last > duration + 3:
+        return False, "timestamps_outside_track", None
+
+    trailing_gap = duration - last
+    suspicious_gap = max(25.0, duration * 0.08)
+    if first < 5 and trailing_gap > suspicious_gap:
+        # Most normal LRC files leave roughly 5–10 seconds after the last line.
+        # A large remaining gap plus an immediate first line strongly suggests
+        # that a video intro was prepended to album-version timestamps.
+        suggested = round(max(0.0, trailing_gap - 8.0), 1)
+        return False, "possible_video_intro", suggested
+    return True, None, None
+
+
+def _lyrics_response(
+    hit: dict[str, Any] | None, duration: int = 0
+) -> dict[str, Any]:
     if not hit:
         return {
             "synced": [], "plain": "", "source": "lrclib", "found": False,
             "matchVersion": _LYRICS_MATCH_VERSION,
+            "timingReliable": True,
         }
     synced = _parse_lrc(hit.get("syncedLyrics") or "")
+    timing_reliable, timing_issue, suggested_offset = _lyrics_timing(
+        synced, duration
+    )
     return {
         "synced": synced,
         "plain": hit.get("plainLyrics") or "",
@@ -443,6 +475,9 @@ def _lyrics_response(hit: dict[str, Any] | None) -> dict[str, Any]:
         "matchedTitle": hit.get("trackName") or "",
         "matchedArtist": hit.get("artistName") or "",
         "matchedDuration": int(float(hit.get("duration") or 0)),
+        "timingReliable": timing_reliable,
+        "timingIssue": timing_issue,
+        "suggestedOffset": suggested_offset,
     }
 
 
@@ -755,7 +790,7 @@ def lyrics(title: str, artist: str = "", duration: int = 0) -> dict[str, Any]:
                 if r.status_code == 200:
                     exact = _select_lyric_hit([r.json()], identities, duration)
                     if exact:
-                        return _lyrics_response(exact)
+                        return _lyrics_response(exact, duration)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -780,7 +815,8 @@ def lyrics(title: str, artist: str = "", duration: int = 0) -> dict[str, Any]:
                 pass
 
     return _lyrics_response(
-        _select_lyric_hit(list(candidates.values()), identities, duration)
+        _select_lyric_hit(list(candidates.values()), identities, duration),
+        duration,
     )
 
 

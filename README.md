@@ -55,11 +55,13 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 - Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**.
 - **Crossfade**, 2–12 s, adjustable.
 - **Remember playback position** (Settings → Audio, on by default) — after closing the app, the **mini-player** reappears immediately with the last track, artwork, and progress bar. Audio loads only when you press Play and resumes from the saved scrub position. Session data stays on-device (not synced to the server).
-- **Sleep timer**: 5–60 min presets or **End of track**, with a 10-second fade-out.
+- **Sleep timer**: 5–60 min presets or **End of track**, with a 10-second fade-out. Open it from the **⋯** menu on the Now Playing screen.
 - 5-band **equalizer**, playback **speed**, **output picker**, right-edge **volume drag HUD**.
 
 ### <img src="docs/icons/player.svg" width="18" align="top"> The Now-Playing screen
 - Full-screen layout: blurred artwork behind a colour veil derived from the cover.
+- **Swipe down to dismiss** — drag the screen down to return to the mini-player without pausing playback (same as collapsing the player).
+- **Minimal top bar** — centred title with a plain **⋯** menu (no chevron or separate sleep-timer icon). Sleep timer lives in that menu, above track actions.
 - **Two-role dynamic colour** — a vivid *accent* for marks, a deep same-hue *backdrop* for the wash, each held to its WCAG ratio. See [Colour](#colour).
 - **Waveform seeker** — custom-painted bars with an elastic bump near the finger and a haptic tick per bar.
 - **Album-art pulse**: orbiting particles and a breathing ring that speeds up while playing.

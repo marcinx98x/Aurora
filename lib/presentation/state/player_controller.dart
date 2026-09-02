@@ -114,6 +114,8 @@ class PlayerController extends Notifier<PlayerState> {
   double _baseVolume = 1.0;
   Timer? _sessionDebounce;
   bool _wasPlaying = false;
+  bool _sessionRestorePending = false;
+  Duration _restoredStartAt = Duration.zero;
 
   @override
   PlayerState build() {
@@ -125,8 +127,25 @@ class PlayerController extends Notifier<PlayerState> {
       _sessionDebounce?.cancel();
       _player.dispose();
     });
-    unawaited(_restoreSessionIfEnabled());
-    return const PlayerState();
+    return _initialStateFromSession() ?? const PlayerState();
+  }
+
+  /// Restores queue/position for the mini-player without loading audio yet.
+  PlayerState? _initialStateFromSession() {
+    if (!ref.read(resumePlaybackProvider)) return null;
+    final session = ref.read(localStoreProvider).playbackSession();
+    if (session == null) return null;
+
+    final queue = _enrichQueue(session.queue);
+    final index = session.index.clamp(0, queue.length - 1);
+    _sessionRestorePending = true;
+    _restoredStartAt = session.position;
+    return PlayerState(
+      queue: queue,
+      index: index,
+      position: session.position,
+      duration: queue[index].duration,
+    );
   }
 
   void _createPlayer() {
@@ -170,7 +189,9 @@ class PlayerController extends Notifier<PlayerState> {
 
     player.positionStream.listen((p) {
       if (!isCurrentPlayer()) return;
-      if (!state.isLoading) state = state.copyWith(position: p);
+      if (!_sessionRestorePending && !state.isLoading) {
+        state = state.copyWith(position: p);
+      }
       _maybeFadeOut();
       final id = state.current?.id;
       if (id != null && id == _lastTickId) {
@@ -187,7 +208,7 @@ class PlayerController extends Notifier<PlayerState> {
       }
       _lastTickId = id;
       _lastTick = p;
-      _schedulePersistSession();
+      if (!_sessionRestorePending) _schedulePersistSession();
     });
     player.durationStream.listen((d) {
       if (!isCurrentPlayer()) return;
@@ -237,6 +258,8 @@ class PlayerController extends Notifier<PlayerState> {
 
   Future<void> playQueue(List<Track> tracks, {int startAt = 0}) async {
     if (tracks.isEmpty) return;
+    _sessionRestorePending = false;
+    _restoredStartAt = Duration.zero;
     state = state.copyWith(
       queue: tracks,
       index: startAt.clamp(0, tracks.length - 1),
@@ -253,10 +276,18 @@ class PlayerController extends Notifier<PlayerState> {
       await _player.pause();
     } else if (_player.processingState == ja.ProcessingState.idle &&
         state.hasTrack) {
-      // After a native/source failure the controller deliberately swaps in a
-      // clean player. Let Play reload the selected track instead of calling
-      // play() on that new player's empty source.
-      await _loadCurrent(autoplay: true);
+      // Cold start, stream failure, or lazy session restore — load (or reload)
+      // the source and resume from the saved scrub position.
+      final recordRecent = !_sessionRestorePending;
+      final startAt =
+          _sessionRestorePending ? _restoredStartAt : state.position;
+      _sessionRestorePending = false;
+      _restoredStartAt = Duration.zero;
+      await _loadCurrent(
+        autoplay: true,
+        startAt: startAt,
+        recordRecent: recordRecent,
+      );
     } else {
       await _player.play();
     }
@@ -439,6 +470,10 @@ class PlayerController extends Notifier<PlayerState> {
             initialIndex: window.initialIndex,
             initialPosition: startAt,
           );
+          if (startAt > Duration.zero &&
+              _player.position < const Duration(seconds: 2)) {
+            await _player.seek(startAt);
+          }
           break;
         } catch (_) {
           if (token != _loadToken) return;
@@ -622,25 +657,6 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   // --- internal ----------------------------------------------------------
-  Future<void> _restoreSessionIfEnabled() async {
-    if (!ref.read(resumePlaybackProvider)) return;
-    final session = ref.read(localStoreProvider).playbackSession();
-    if (session == null) return;
-
-    final queue = _enrichQueue(session.queue);
-    state = state.copyWith(
-      queue: queue,
-      index: session.index.clamp(0, queue.length - 1),
-      position: session.position,
-      duration: queue[session.index.clamp(0, queue.length - 1)].duration,
-    );
-    await _loadCurrent(
-      autoplay: false,
-      startAt: session.position,
-      recordRecent: false,
-    );
-  }
-
   List<Track> _enrichQueue(List<Track> queue) {
     final downloads = {
       for (final t in ref.read(localStoreProvider).downloads()) t.id: t,
@@ -668,7 +684,12 @@ class PlayerController extends Notifier<PlayerState> {
   Future<void> _persistSession() async {
     if (!ref.read(resumePlaybackProvider)) return;
     if (!state.hasTrack || state.queue.isEmpty) return;
-    final position = state.isLoading ? state.position : _player.position;
+    final position = _sessionRestorePending
+        ? _restoredStartAt
+        : (state.isLoading ||
+                _player.processingState == ja.ProcessingState.idle
+            ? state.position
+            : _player.position);
     await ref.read(localStoreProvider).savePlaybackSession(
           queue: state.queue,
           index: state.index,

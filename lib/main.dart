@@ -84,7 +84,8 @@ class _AuroraAppState extends ConsumerState<AuroraApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       unawaited(ref.read(playerControllerProvider.notifier).persistSessionNow());
     }

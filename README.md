@@ -54,7 +54,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 - **Dual source**: remote YouTube and local device files run through the same `just_audio` engine.
 - Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**.
 - **Crossfade**, 2–12 s, adjustable.
-- **Remember playback position** — optional; restores the last queue, track, and scrub position after a cold start (paused until you press Play).
+- **Remember playback position** (Settings → Audio, on by default) — after closing the app, the **mini-player** reappears immediately with the last track, artwork, and progress bar. Audio loads only when you press Play and resumes from the saved scrub position. Session data stays on-device (not synced to the server).
 - **Sleep timer**: 5–60 min presets or **End of track**, with a 10-second fade-out.
 - 5-band **equalizer**, playback **speed**, **output picker**, right-edge **volume drag HUD**.
 

@@ -66,6 +66,11 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen>
       body: Stack(
         fit: StackFit.expand,
         children: [
+          _SwipeDownDismiss(
+            onDismiss: () => Navigator.of(context).maybePop(),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
           // Layered blurred-artwork background + dark gradient veil.
           // The blur is held at low opacity on purpose: it is texture, not a
           // background. At full strength a bright cover pushes the composite
@@ -175,8 +180,81 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen>
               ),
             ),
           ),
+              ],
+            ),
+          ),
           const _VolumeDragLayer(),
         ],
+      ),
+    );
+  }
+}
+
+/// Drag down to close — same as the top-bar chevron (`Navigator.maybePop`).
+class _SwipeDownDismiss extends StatefulWidget {
+  const _SwipeDownDismiss({required this.child, required this.onDismiss});
+
+  final Widget child;
+  final VoidCallback onDismiss;
+
+  @override
+  State<_SwipeDownDismiss> createState() => _SwipeDownDismissState();
+}
+
+class _SwipeDownDismissState extends State<_SwipeDownDismiss>
+    with SingleTickerProviderStateMixin {
+  static const _dismissDistance = 120.0;
+  static const _dismissVelocity = 400.0;
+
+  double _offset = 0;
+  late final AnimationController _snap =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 200));
+  Animation<double>? _snapAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _snap.addListener(() {
+      final anim = _snapAnimation;
+      if (anim != null) setState(() => _offset = anim.value);
+    });
+  }
+
+  @override
+  void dispose() {
+    _snap.dispose();
+    super.dispose();
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    _snap.stop();
+    _snapAnimation = null;
+    setState(() {
+      _offset = (_offset + details.primaryDelta!).clamp(0.0, double.infinity);
+    });
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    if (_offset > _dismissDistance || velocity > _dismissVelocity) {
+      HapticFeedback.lightImpact();
+      widget.onDismiss();
+      return;
+    }
+    _snapAnimation = Tween<double>(begin: _offset, end: 0).animate(
+      CurvedAnimation(parent: _snap, curve: Curves.easeOut),
+    );
+    _snap.forward(from: 0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onVerticalDragUpdate: _onDragUpdate,
+      onVerticalDragEnd: _onDragEnd,
+      child: Transform.translate(
+        offset: Offset(0, _offset),
+        child: widget.child,
       ),
     );
   }

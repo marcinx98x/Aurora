@@ -144,6 +144,13 @@ class SyncService {
     }
   }
 
+  /// Uploads the current Hive snapshot while the Firebase session is still valid.
+  /// Call this before [FirebaseAuth.signOut] so recents/stats are not lost.
+  Future<void> flushSnapshot() async {
+    _uploadDebounce?.cancel();
+    await _pushSnapshot();
+  }
+
   Future<void> onSignedOut() async {
     _uploadDebounce?.cancel();
     final store = _ref.read(localStoreProvider);
@@ -194,13 +201,19 @@ class SyncService {
     }
   }
 
-  void _scheduleUpload() {
+  /// Schedules a debounced upload of playlists, favorites, and account state.
+  void _scheduleUpload({Duration delay = const Duration(seconds: 2)}) {
     if (FirebaseAuth.instance.currentUser == null) return;
     _uploadDebounce?.cancel();
-    _uploadDebounce = Timer(const Duration(seconds: 2), () {
+    _uploadDebounce = Timer(delay, () {
       unawaited(_pushSnapshot());
     });
   }
+
+  /// Faster upload after playback history changes (recents + stats).
+  void pushStateNow() => _scheduleUpload(
+        delay: const Duration(milliseconds: 300),
+      );
 
   Future<void> _pushSnapshot() async {
     if (_syncing) return;

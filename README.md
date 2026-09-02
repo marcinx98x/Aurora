@@ -8,7 +8,7 @@
 
 real search & streaming · synced lyrics · offline downloads · on-device library · playlists
 
-**[Download latest APK](https://github.com/abdullaabdullazade/Aurora/releases/latest/download/Aurora-Music.apk)** · **[Website](https://abdullaabdullazade.github.io/Aurora/)** · **[Video demo](docs/media/aurora-demo.mp4)**
+**[Download latest APK](https://github.com/marcinx98x/Aurora/releases/latest/download/Aurora-Music.apk)** · **[Website](https://abdullaabdullazade.github.io/Aurora/)** · **[Video demo](docs/media/aurora-demo.mp4)**
 
 </div>
 
@@ -54,6 +54,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 - **Dual source**: remote YouTube and local device files run through the same `just_audio` engine.
 - Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**.
 - **Crossfade**, 2–12 s, adjustable.
+- **Remember playback position** — optional; restores the last queue, track, and scrub position after a cold start (paused until you press Play).
 - **Sleep timer**: 5–60 min presets or **End of track**, with a 10-second fade-out.
 - 5-band **equalizer**, playback **speed**, **output picker**, right-edge **volume drag HUD**.
 
@@ -221,10 +222,19 @@ Downloaded tracks are stored under `server/cache` and indexed by YouTube video I
 SQLite, so later requests and server restarts reuse the same file. The cache is unlimited by
 default; set `AURORA_CACHE_MAX_BYTES=10GB` (or another size) to enable LRU eviction.
 
-When signed in with Google, playlists, liked songs, recents, download metadata, lyrics,
-listening stats, search history, and app settings are backed up to the private resolver's
-SQLite database (per Firebase user). After reinstall or switching accounts, data is restored
-from the server; signing out clears local personal data on the device.
+When signed in with Google, **playlists**, **liked songs**, **recently played**, download
+metadata, lyrics, listening stats, and app settings are backed up to the private resolver's
+SQLite database (per Firebase user). Liked songs sync immediately on every heart tap; history
+and stats upload shortly after playback (and flush before sign-out so nothing is lost). After
+reinstall or signing back in, data is restored from the server; signing out clears local
+personal data on the device (server copy is kept). Search history stays on-device only.
+
+Verify sync is configured on your server:
+
+```powershell
+.\server\scripts\verify_sync.ps1
+# Expect HTTP 401 on /sync (auth required). HTTP 503 means FIREBASE_PROJECT_ID is missing — restart the container.
+```
 
 For YouTube requests from a datacenter/VPS, create the private proxy list from
 the safe example:

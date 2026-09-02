@@ -9,6 +9,7 @@ import '../../state/favorites_controller.dart';
 import '../../state/providers.dart';
 import '../../state/settings_controller.dart';
 import '../../state/auth_controller.dart';
+import '../../../core/db/sync_service.dart';
 import 'equalizer_screen.dart';
 import 'stats_screen.dart';
 
@@ -20,6 +21,7 @@ class SettingsScreen extends ConsumerWidget {
     final mode = ref.watch(themeModeProvider);
     final crossfade = ref.watch(crossfadeProvider);
     final seconds = ref.watch(crossfadeSecondsProvider);
+    final resumePlayback = ref.watch(resumePlaybackProvider);
     final text = Theme.of(context).textTheme;
 
     return Scaffold(
@@ -82,6 +84,16 @@ class SettingsScreen extends ConsumerWidget {
                     ref.read(crossfadeSecondsProvider.notifier).set(v.round()),
               ),
             ),
+          _Switch(
+            icon: Icons.history_rounded,
+            title: 'Remember playback position',
+            subtitle: resumePlayback
+                ? 'Resume where you left off when reopening the app'
+                : 'Always start tracks from the beginning',
+            value: resumePlayback,
+            onChanged: (v) =>
+                ref.read(resumePlaybackProvider.notifier).set(v),
+          ),
           const SizedBox(height: Sp.xl),
           Text('Library', style: text.labelLarge),
           const SizedBox(height: Sp.sm),
@@ -269,7 +281,10 @@ class _AccountSection extends ConsumerWidget {
               subtitle: Text(user.email ?? '', style: text.bodyMedium),
               trailing: IconButton(
                 icon: const Icon(Icons.logout_rounded),
-                onPressed: () => authController.signOut(),
+                onPressed: () async {
+                  await ref.read(syncServiceProvider).flushSnapshot();
+                  await authController.signOut();
+                },
               ),
             );
           },

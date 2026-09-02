@@ -12,6 +12,7 @@ import '../../core/notifications/notification_service.dart';
 import '../../core/theme/dynamic_palette.dart';
 import '../../data/datasources/yt_stream_resolver.dart';
 import '../../domain/entities/track.dart';
+import '../../core/db/sync_service.dart';
 import 'providers.dart';
 
 enum LoopMode { off, one, all }
@@ -111,6 +112,8 @@ class PlayerController extends Notifier<PlayerState> {
   Timer? _sleepTimer;
   DateTime? _sleepEnd;
   double _baseVolume = 1.0;
+  Timer? _sessionDebounce;
+  bool _wasPlaying = false;
 
   @override
   PlayerState build() {
@@ -119,8 +122,10 @@ class PlayerController extends Notifier<PlayerState> {
     ref.onDispose(() {
       _sleepTimer?.cancel();
       _fadeTimer?.cancel();
+      _sessionDebounce?.cancel();
       _player.dispose();
     });
+    unawaited(_restoreSessionIfEnabled());
     return const PlayerState();
   }
 
@@ -182,6 +187,7 @@ class PlayerController extends Notifier<PlayerState> {
       }
       _lastTickId = id;
       _lastTick = p;
+      _schedulePersistSession();
     });
     player.durationStream.listen((d) {
       if (!isCurrentPlayer()) return;
@@ -190,6 +196,10 @@ class PlayerController extends Notifier<PlayerState> {
     player.playerStateStream.listen((ps) {
       if (!isCurrentPlayer()) return;
       state = state.copyWith(isPlaying: ps.playing);
+      if (_wasPlaying && !ps.playing) {
+        unawaited(persistSessionNow());
+      }
+      _wasPlaying = ps.playing;
       if (ps.processingState == ja.ProcessingState.completed) _onComplete();
     });
     // Handle skip buttons from the lock-screen / notification. When the user
@@ -255,6 +265,7 @@ class PlayerController extends Notifier<PlayerState> {
   Future<void> pause() async {
     if (_player.playing) {
       await _player.pause();
+      await persistSessionNow();
     }
   }
 
@@ -385,13 +396,20 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   // Resolves the current track on-device (residential IP) and plays it.
-  Future<void> _loadCurrent({bool autoplay = false}) async {
+  Future<void> _loadCurrent({
+    bool autoplay = false,
+    Duration startAt = Duration.zero,
+    bool recordRecent = true,
+  }) async {
     final track = state.current;
     if (track == null) return;
     final token = ++_loadToken;
     _cancelFade();
-    state = state.copyWith(isLoading: true, position: Duration.zero);
-    _recordRecent(track);
+    state = state.copyWith(
+      isLoading: true,
+      position: startAt > Duration.zero ? startAt : Duration.zero,
+    );
+    if (recordRecent) _recordRecent(track);
     try {
       final uri = await _getTrackUri(track);
       if (token != _loadToken) return;
@@ -419,6 +437,7 @@ class PlayerController extends Notifier<PlayerState> {
           await _player.setAudioSource(
             window.source,
             initialIndex: window.initialIndex,
+            initialPosition: startAt,
           );
           break;
         } catch (_) {
@@ -443,6 +462,7 @@ class PlayerController extends Notifier<PlayerState> {
       }
       if (token != _loadToken) return;
       _applyPalette(track);
+      await _persistSession();
     } catch (e, st) {
       debugPrint('[player] load failed: $e\n$st');
       if (token == _loadToken) {
@@ -602,10 +622,65 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   // --- internal ----------------------------------------------------------
+  Future<void> _restoreSessionIfEnabled() async {
+    if (!ref.read(resumePlaybackProvider)) return;
+    final session = ref.read(localStoreProvider).playbackSession();
+    if (session == null) return;
+
+    final queue = _enrichQueue(session.queue);
+    state = state.copyWith(
+      queue: queue,
+      index: session.index.clamp(0, queue.length - 1),
+      position: session.position,
+      duration: queue[session.index.clamp(0, queue.length - 1)].duration,
+    );
+    await _loadCurrent(
+      autoplay: false,
+      startAt: session.position,
+      recordRecent: false,
+    );
+  }
+
+  List<Track> _enrichQueue(List<Track> queue) {
+    final downloads = {
+      for (final t in ref.read(localStoreProvider).downloads()) t.id: t,
+    };
+    return queue
+        .map((track) => downloads[track.id] ?? track)
+        .toList(growable: false);
+  }
+
+  void _schedulePersistSession() {
+    if (!ref.read(resumePlaybackProvider)) return;
+    if (!state.hasTrack) return;
+    _sessionDebounce?.cancel();
+    _sessionDebounce = Timer(const Duration(seconds: 3), () {
+      unawaited(_persistSession());
+    });
+  }
+
+  /// Immediate save — used on pause and when the app backgrounds.
+  Future<void> persistSessionNow() async {
+    _sessionDebounce?.cancel();
+    await _persistSession();
+  }
+
+  Future<void> _persistSession() async {
+    if (!ref.read(resumePlaybackProvider)) return;
+    if (!state.hasTrack || state.queue.isEmpty) return;
+    final position = state.isLoading ? state.position : _player.position;
+    await ref.read(localStoreProvider).savePlaybackSession(
+          queue: state.queue,
+          index: state.index,
+          position: position,
+        );
+  }
+
   Future<void> _recordRecent(Track t) async {
     final store = ref.read(localStoreProvider);
     await store.pushRecent(t);
     await store.bumpPlay(t);
+    ref.read(syncServiceProvider).pushStateNow();
     ref.invalidate(recentlyPlayedProvider);
     ref.invalidate(listeningStatsProvider);
   }

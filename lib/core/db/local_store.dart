@@ -1,8 +1,25 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../../domain/entities/playlist.dart';
 import '../../domain/entities/track.dart';
+
+/// Last queue, track index, and scrub position for resume-on-launch.
+@immutable
+class PlaybackSession {
+  const PlaybackSession({
+    required this.queue,
+    required this.index,
+    required this.position,
+    required this.savedAt,
+  });
+
+  final List<Track> queue;
+  final int index;
+  final Duration position;
+  final DateTime savedAt;
+}
 
 /// Thin Hive wrapper. Offline-first index for playlists, recents, downloads.
 /// Stores plain JSON maps so no codegen/adapters are required.
@@ -22,6 +39,8 @@ class LocalStore {
   static const _maxRecents = 30;
   static const _searchHistoryKey = 'search_history';
   static const _maxSearchHistory = 12;
+  static const _playbackSessionKey = 'playback_session';
+  static const _playbackSessionMaxAge = Duration(days: 30);
 
   late final Box<dynamic> _playlists;
   late final Box<dynamic> _recents;
@@ -148,6 +167,60 @@ class LocalStore {
 
   Future<void> clearSearchHistory() => _settings.delete(_searchHistoryKey);
 
+  // --- Playback session (device-local, not synced) -----------------------
+  PlaybackSession? playbackSession() {
+    final raw = _settings.get(_playbackSessionKey);
+    if (raw is! Map) return null;
+    final map = Map<dynamic, dynamic>.from(raw);
+    final queueRaw = map['queue'];
+    if (queueRaw is! List || queueRaw.isEmpty) return null;
+    final queue = queueRaw
+        .whereType<Map>()
+        .map(Track.fromJson)
+        .toList(growable: false);
+    if (queue.isEmpty) return null;
+    final index = (map['index'] as num?)?.toInt() ?? 0;
+    if (index < 0 || index >= queue.length) return null;
+    final savedAtSec = (map['savedAt'] as num?)?.toInt();
+    if (savedAtSec == null) return null;
+    final savedAt =
+        DateTime.fromMillisecondsSinceEpoch(savedAtSec * 1000, isUtc: true);
+    if (DateTime.now().toUtc().difference(savedAt) > _playbackSessionMaxAge) {
+      return null;
+    }
+    return PlaybackSession(
+      queue: queue,
+      index: index,
+      position: Duration(milliseconds: (map['positionMs'] as num?)?.toInt() ?? 0),
+      savedAt: savedAt,
+    );
+  }
+
+  Future<void> savePlaybackSession({
+    required List<Track> queue,
+    required int index,
+    required Duration position,
+  }) async {
+    if (queue.isEmpty) return;
+    final safeIndex = index.clamp(0, queue.length - 1);
+    final track = queue[safeIndex];
+    var positionMs = position.inMilliseconds;
+    final totalMs = track.duration.inMilliseconds;
+    if (totalMs > 0 && positionMs > totalMs * 0.95) {
+      positionMs = 0;
+    }
+    await _settings.put(_playbackSessionKey, {
+      'version': 1,
+      'queue': queue.map(_portableTrack).toList(),
+      'index': safeIndex,
+      'positionMs': positionMs,
+      'savedAt': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+    });
+  }
+
+  Future<void> clearPlaybackSession() =>
+      _settings.delete(_playbackSessionKey);
+
   // --- Listening stats ---------------------------------------------------
   /// One row per track: how many times it started and how long it was heard.
   /// Recents are capped at 30 and reordered, so they cannot answer "what did
@@ -236,7 +309,8 @@ class LocalStore {
             .toList(),
         'settings': {
           for (final entry in _settings.toMap().entries)
-            entry.key.toString(): _jsonValue(entry.value),
+            if (entry.key.toString() != _playbackSessionKey)
+              entry.key.toString(): _jsonValue(entry.value),
         },
       };
 
@@ -295,6 +369,7 @@ class LocalStore {
     if (remoteSettings is Map) {
       for (final entry in remoteSettings.entries) {
         final key = entry.key.toString();
+        if (key == _playbackSessionKey) continue;
         if (!_settings.containsKey(key)) {
           await _settings.put(key, entry.value);
         }

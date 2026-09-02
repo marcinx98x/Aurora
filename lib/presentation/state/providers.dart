@@ -242,3 +242,25 @@ class CrossfadeSecondsController extends Notifier<int> {
 final crossfadeSecondsProvider =
     NotifierProvider<CrossfadeSecondsController, int>(
         CrossfadeSecondsController.new);
+
+/// Resume the last track and position after a cold start (paused).
+class ResumePlaybackController extends Notifier<bool> {
+  static const _key = 'resume_playback';
+
+  @override
+  bool build() {
+    ref.watch(syncRevisionProvider);
+    return ref.watch(localStoreProvider).flag(_key, fallback: true);
+  }
+
+  Future<void> set(bool value) async {
+    final store = ref.read(localStoreProvider);
+    await store.setFlag(_key, value);
+    if (!value) await store.clearPlaybackSession();
+    state = value;
+  }
+}
+
+final resumePlaybackProvider =
+    NotifierProvider<ResumePlaybackController, bool>(
+        ResumePlaybackController.new);

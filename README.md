@@ -148,7 +148,7 @@ Client-side scraping gets rate-limited and `403`'d per device IP and breaks when
 changes. `yt-dlp` is the most robust extractor available, so it runs server-side: one stable IP,
 a shared cache, and a Range-seekable audio proxy.
 
-**Docker Hub:** [`marcinx98x/aurora-server`](https://hub.docker.com/r/marcinx98x/aurora-server) — recommended for Synology, VPS, or any Docker host.
+**Docker Hub:** [`marcinx98x/aurora-server`](https://hub.docker.com/r/marcinx98x/aurora-server) — recommended for Synology NAS, VPS, or any Docker host. No local Python or `Dockerfile` required on the server.
 
 ```
 GET /health
@@ -160,20 +160,51 @@ GET /suggest?q=…             → search autocomplete (returns [] on failure, n
 GET/PUT /sync                → Firebase-authenticated account backup and restore
 ```
 
-### Docker (recommended)
+### Docker Compose (recommended)
+
+The compose file pulls a pre-built image from Docker Hub (`pull_policy: always`). You only need `.env`, `cache/`, and `data/` on the host.
 
 ```bash
 cd server
 cp .env.example .env
-# Required: AURORA_SECRET_KEY, FIREBASE_PROJECT_ID
+# Required in .env: AURORA_SECRET_KEY, FIREBASE_PROJECT_ID
 docker compose pull
 docker compose up -d
 curl http://localhost:18000/health   # → {"ok":true}
 ```
 
-Compose maps host port **18000** → container **8000**. Persistent volumes: `./cache` (stream cache), `./data` (user sync DB). See [`server/README.md`](server/README.md) for full options.
+| Setting | Value |
+|---------|--------|
+| Image | `marcinx98x/aurora-server:latest` |
+| Host port | **18000** (maps to container **8000**) |
+| `./cache` | Stream cache (audio + SQLite index) |
+| `./data` | User sync database (Firebase backup) |
 
-Pushes to `main` that touch `server/**` publish a new image via GitHub Actions (requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets).
+**Synology NAS:** copy `docker-compose.yml` and `.env` to your Docker folder (e.g. `/volume1/docker/aurora`), then run the same `docker compose pull && docker compose up -d` via SSH or Container Manager. Point Cloudflare/your reverse proxy at port **18000**.
+
+**Update to a new release:**
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+One-liner without Compose:
+
+```bash
+docker pull marcinx98x/aurora-server:latest
+docker run -d --name aurora-server \
+  -p 18000:8000 \
+  --env-file .env \
+  -v ./cache:/app/cache \
+  -v ./data:/app/data \
+  --restart unless-stopped \
+  marcinx98x/aurora-server:latest
+```
+
+Full server docs: [`server/README.md`](server/README.md).
+
+Pushes to `main` that touch `server/**` auto-publish a new image via GitHub Actions (secret `DOCKERHUB_TOKEN` or `MARCINX98X`).
 
 ### Local Python (development)
 

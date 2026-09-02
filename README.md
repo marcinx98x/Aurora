@@ -296,12 +296,13 @@ flutter build apk --release --dart-define-from-file=.env
 
 ### Docker server image
 
-Pushes to `main` that change `server/**` build and push [`marcinx98x/aurora-server`](https://hub.docker.com/r/marcinx98x/aurora-server) when these GitHub Actions secrets are set:
+Pushes to `main` that change `server/**` build and push [`marcinx98x/aurora-server`](https://hub.docker.com/r/marcinx98x/aurora-server) when a Docker Hub token is configured in GitHub Actions secrets:
 
 | Secret | Value |
 |--------|--------|
-| `DOCKERHUB_USERNAME` | your Docker Hub username |
 | `DOCKERHUB_TOKEN` | Docker Hub access token (Read & Write) |
+
+Alternatively, a secret named `MARCINX98X` with the same token also works. The Docker Hub username is fixed to `marcinx98x` in the workflow.
 
 You can also trigger **Publish Docker Hub** manually from the Actions tab.
 

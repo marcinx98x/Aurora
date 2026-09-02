@@ -27,8 +27,9 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          # Username is public (image name). Token: DOCKERHUB_TOKEN or MARCINX98X.
+          username: marcinx98x
+          password: ${{ secrets.DOCKERHUB_TOKEN || secrets.MARCINX98X }}
 
       - name: Docker metadata
         id: meta

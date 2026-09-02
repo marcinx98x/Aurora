@@ -19,7 +19,6 @@ import '../library/add_to_playlist_sheet.dart';
 import '../library/track_context_sheet.dart';
 import 'queue_sheet.dart';
 import 'lyrics_sheet.dart';
-import 'sleep_timer_sheet.dart';
 
 class NowPlayingScreen extends ConsumerStatefulWidget {
   const NowPlayingScreen({super.key});
@@ -507,14 +506,9 @@ class _TopBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final text = Theme.of(context).textTheme;
-    final sleeping = ref.watch(playerControllerProvider
-        .select((s) => s.sleepRemaining != null || s.sleepAtTrackEnd));
     return Row(
       children: [
-        _RoundIcon(
-          icon: Icons.keyboard_arrow_down_rounded,
-          onTap: () => Navigator.of(context).maybePop(),
-        ),
+        const SizedBox(width: 42),
         Expanded(
           child: Column(
             children: [
@@ -529,53 +523,20 @@ class _TopBar extends ConsumerWidget {
             ],
           ),
         ),
-        _RoundIcon(
-          icon: sleeping ? Icons.bedtime_rounded : Icons.bedtime_outlined,
-          highlight: sleeping,
-          onTap: () => SleepTimerSheet.show(context),
-        ),
-        const SizedBox(width: Sp.sm),
-        _RoundIcon(
-          icon: Icons.more_horiz_rounded,
+        GestureDetector(
           onTap: () {
             final t = ref.read(playerControllerProvider).current;
-            if (t != null) TrackContextSheet.show(context, t);
+            if (t != null) {
+              TrackContextSheet.show(context, t, showSleepTimer: true);
+            }
           },
+          child: const Padding(
+            padding: EdgeInsets.all(10),
+            child: Icon(Icons.more_horiz_rounded,
+                size: 22, color: AppColors.textPrimary),
+          ),
         ),
       ],
-    );
-  }
-}
-
-class _RoundIcon extends StatelessWidget {
-  final IconData icon;
-  final VoidCallback onTap;
-  final bool highlight;
-  const _RoundIcon(
-      {required this.icon, required this.onTap, this.highlight = false});
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 42,
-        height: 42,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: highlight
-              ? AppColors.accentSoft
-              : Colors.white.withValues(alpha: 0.06),
-          border: Border.all(
-              color: highlight
-                  ? AppColors.accentBright
-                  : AppColors.glassStroke),
-        ),
-        child: Icon(icon,
-            size: 22,
-            color: highlight
-                ? AppColors.accentBright
-                : AppColors.textPrimary),
-      ),
     );
   }
 }

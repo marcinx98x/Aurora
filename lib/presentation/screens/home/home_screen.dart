@@ -17,18 +17,27 @@ class HomeScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final forYou = ref.watch(forYouProvider);
     final trending = ref.watch(trendingProvider);
     final charts = ref.watch(topChartsProvider);
     final recent = ref.watch(recentlyPlayedProvider);
+    final quickDownloads = ref.watch(quickDownloadsProvider);
     final online = ref.watch(isOnlineProvider);
     final user = ref.watch(authStateProvider).valueOrNull;
     final text = Theme.of(context).textTheme;
 
     return AuroraRefresh(
       onRefresh: () async {
+        ref.read(musicRepositoryProvider).invalidateRecommendationCaches();
+        ref.invalidate(forYouProvider);
         ref.invalidate(trendingProvider);
+        ref.invalidate(topChartsProvider);
+        ref.invalidate(quickDownloadsProvider);
         ref.invalidate(recentlyPlayedProvider);
-        await ref.read(trendingProvider.future);
+        await Future.wait([
+          ref.read(forYouProvider.future),
+          ref.read(trendingProvider.future),
+        ]);
       },
       child: CustomScrollView(
         physics: const BouncingScrollPhysics(
@@ -105,8 +114,16 @@ class HomeScreen extends ConsumerWidget {
           ),
           if (!online) const SliverToBoxAdapter(child: _OfflineSanctuary()),
           const SliverToBoxAdapter(child: SizedBox(height: Sp.sm)),
-          // Each section retries only its own provider — a failed carousel
-          // should not refetch (or wipe) the ones that loaded fine.
+          SliverToBoxAdapter(
+            child: SectionCarousel(
+              title: 'For you',
+              data: forYou,
+              cardSize: 168,
+              emptyTitle: 'Nothing picked yet',
+              emptySubtitle: 'Listen to a few tracks and we\'ll learn your taste.',
+              onRetry: () => ref.invalidate(forYouProvider),
+            ),
+          ),
           SliverToBoxAdapter(
             child: SectionCarousel(
               title: 'Trending now',
@@ -141,11 +158,11 @@ class HomeScreen extends ConsumerWidget {
           SliverToBoxAdapter(
             child: SectionCarousel(
               title: 'Quick downloads',
-              data: trending,
+              data: quickDownloads,
               cardSize: 140,
               emptyTitle: 'Nothing to download',
-              emptySubtitle: 'Suggestions appear once trends load.',
-              onRetry: () => ref.invalidate(trendingProvider),
+              emptySubtitle: 'Suggestions appear once For you loads.',
+              onRetry: () => ref.invalidate(quickDownloadsProvider),
             ),
           ),
           // Bottom padding so content clears mini-player + nav bar.

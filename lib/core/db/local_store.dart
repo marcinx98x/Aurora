@@ -191,6 +191,30 @@ class LocalStore {
 
   Future<void> clearStats() => _stats.clear();
 
+  /// Wipes per-account data when switching users or signing out.
+  /// Device prefs (theme, crossfade, hidden folders) are kept.
+  Future<void> clearAccountData() async {
+    await Future.wait([
+      _playlists.clear(),
+      _favorites.clear(),
+      _recents.clear(),
+      _stats.clear(),
+      _downloads.clear(),
+      _lyrics.clear(),
+      clearSearchHistory(),
+    ]);
+  }
+
+  String? lastAccountUid() => _settings.get('last_account_uid') as String?;
+
+  Future<void> setLastAccountUid(String? uid) async {
+    if (uid == null || uid.isEmpty) {
+      await _settings.delete('last_account_uid');
+    } else {
+      await _settings.put('last_account_uid', uid);
+    }
+  }
+
   // --- Downloads ---------------------------------------------------------
   List<Track> downloads() => _downloads.values
       .map((e) => Track.fromJson(Map<dynamic, dynamic>.from(e as Map)))

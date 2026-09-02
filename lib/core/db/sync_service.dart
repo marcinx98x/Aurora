@@ -15,8 +15,12 @@ import '../config/app_config.dart';
 final syncServiceProvider = Provider<SyncService>((ref) {
   final service = SyncService(ref);
   ref.listen<AsyncValue<User?>>(authStateProvider, (previous, current) {
-    if (current.valueOrNull != null) {
+    final wasSignedIn = previous?.valueOrNull != null;
+    final isSignedIn = current.valueOrNull != null;
+    if (isSignedIn) {
       unawaited(service.syncAll());
+    } else if (wasSignedIn) {
+      unawaited(service.onSignedOut());
     }
   }, fireImmediately: true);
   return service;
@@ -72,11 +76,20 @@ class SyncService {
 
   Future<void> syncAll() async {
     if (_syncing) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
     final options = await _authOptions();
     if (options == null) return;
     _syncing = true;
     try {
       final store = _ref.read(localStoreProvider);
+      final uid = user.uid;
+
+      // Another Google account on this device — drop the previous user's cache.
+      if (store.lastAccountUid() != uid) {
+        await store.clearAccountData();
+        await store.setLastAccountUid(uid);
+      }
 
       // Pull first so server tombstones prevent a playlist deleted on another
       // device from being resurrected by stale local state.
@@ -129,6 +142,14 @@ class SyncService {
     } finally {
       _syncing = false;
     }
+  }
+
+  Future<void> onSignedOut() async {
+    _uploadDebounce?.cancel();
+    final store = _ref.read(localStoreProvider);
+    await store.clearAccountData();
+    await store.setLastAccountUid(null);
+    _notifyLocalChanged();
   }
 
   Future<void> pushFavorite(Track track, bool isLiked) async {

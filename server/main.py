@@ -745,6 +745,87 @@ def playlist(url: str, limit: int = 100) -> dict[str, Any]:
     }
 
 
+@app.get("/youtube/subscriptions")
+def youtube_subscriptions(request: Request, limit: int = 20) -> list[dict[str, Any]]:
+    """Recent uploads from the signed-in user's YouTube subscriptions."""
+    token = request.headers.get("x-google-access-token", "").strip()
+    if not token:
+        raise HTTPException(401, "Missing Google access token")
+    api_key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "YouTube API key not configured")
+
+    limit = max(1, min(limit, 30))
+    tracks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        with httpx.Client(timeout=15) as cx:
+            subs_resp = cx.get(
+                "https://www.googleapis.com/youtube/v3/subscriptions",
+                params={
+                    "part": "snippet,contentDetails",
+                    "mine": "true",
+                    "maxResults": 15,
+                    "key": api_key,
+                },
+                headers=headers,
+            )
+            subs_resp.raise_for_status()
+            for sub in subs_resp.json().get("items") or []:
+                uploads = (
+                    sub.get("contentDetails", {})
+                    .get("relatedPlaylists", {})
+                    .get("uploads")
+                )
+                if not uploads:
+                    continue
+                items_resp = cx.get(
+                    "https://www.googleapis.com/youtube/v3/playlistItems",
+                    params={
+                        "part": "snippet,contentDetails",
+                        "playlistId": uploads,
+                        "maxResults": 2,
+                        "key": api_key,
+                    },
+                    headers=headers,
+                )
+                items_resp.raise_for_status()
+                for item in items_resp.json().get("items") or []:
+                    vid = item.get("contentDetails", {}).get("videoId")
+                    snippet = item.get("snippet") or {}
+                    if not vid or vid in seen:
+                        continue
+                    seen.add(vid)
+                    thumbs = snippet.get("thumbnails") or {}
+                    thumb_obj = (
+                        thumbs.get("high")
+                        or thumbs.get("medium")
+                        or thumbs.get("default")
+                        or {}
+                    )
+                    tracks.append(
+                        {
+                            "id": vid,
+                            "title": snippet.get("title") or "Unknown",
+                            "artist": snippet.get("channelTitle") or "Unknown",
+                            "duration": 0,
+                            "thumbnail": thumb_obj.get("url")
+                            or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                            "views": 0,
+                            "channelUrl": None,
+                        }
+                    )
+                    if len(tracks) >= limit:
+                        return tracks
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, f"YouTube API error: {e.response.text}") from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"subscriptions failed: {e}") from e
+    return tracks
+
+
 @app.get("/suggest")
 def suggest(q: str) -> list[str]:
     """YouTube's own search autocomplete. Returns [] rather than failing —

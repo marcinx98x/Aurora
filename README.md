@@ -46,7 +46,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 ### <img src="docs/icons/search.svg" width="18" align="top"> Discovery & search
 - **Real YouTube search** through the resolver — debounced 350 ms, with Tracks / Playlists / Albums chips.
 - **Live autocomplete** from YouTube's own suggestion endpoint, plus a persisted **search history** (tap to re-run, per-item delete, one-tap clear).
-- **Home dashboard**: parallax `SliverAppBar` header, carousels for Trending, Top Charts, Recently played and Quick downloads.
+- **Home dashboard**: parallax `SliverAppBar` header, carousels for **For you** (personalized from listening history), Trending, Top Charts, Recently played and Quick downloads.
 - **Three states, one height** per section — shimmer skeleton, empty card, error card with a **Retry pill** that refetches only that carousel. Nothing jumps when a future resolves.
 
 ### <img src="docs/icons/play.svg" width="18" align="top"> Playback
@@ -148,6 +148,8 @@ Client-side scraping gets rate-limited and `403`'d per device IP and breaks when
 changes. `yt-dlp` is the most robust extractor available, so it runs server-side: one stable IP,
 a shared cache, and a Range-seekable audio proxy.
 
+**Docker Hub:** [`marcinx98x/aurora-server`](https://hub.docker.com/r/marcinx98x/aurora-server) — recommended for Synology, VPS, or any Docker host.
+
 ```
 GET /health
 GET /search?q=…&limit=20     → [{id, title, artist, duration, thumbnail, views}]
@@ -157,6 +159,23 @@ GET /playlist?url=…          → {title, uploader, tracks[]} from a playlist /
 GET /suggest?q=…             → search autocomplete (returns [] on failure, never throws)
 GET/PUT /sync                → Firebase-authenticated account backup and restore
 ```
+
+### Docker (recommended)
+
+```bash
+cd server
+cp .env.example .env
+# Required: AURORA_SECRET_KEY, FIREBASE_PROJECT_ID
+docker compose pull
+docker compose up -d
+curl http://localhost:18000/health   # → {"ok":true}
+```
+
+Compose maps host port **18000** → container **8000**. Persistent volumes: `./cache` (stream cache), `./data` (user sync DB). See [`server/README.md`](server/README.md) for full options.
+
+Pushes to `main` that touch `server/**` publish a new image via GitHub Actions (requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets).
+
+### Local Python (development)
 
 ```bash
 cd server
@@ -173,8 +192,8 @@ default; set `AURORA_CACHE_MAX_BYTES=10GB` (or another size) to enable LRU evict
 
 When signed in with Google, playlists, liked songs, recents, download metadata, lyrics,
 listening stats, search history, and app settings are backed up to the private resolver's
-SQLite database. After reinstall, download metadata is restored and missing app-private audio
-files are copied back from the resolver's persistent media cache.
+SQLite database (per Firebase user). After reinstall or switching accounts, data is restored
+from the server; signing out clears local personal data on the device.
 
 For YouTube requests from a datacenter/VPS, create the private proxy list from
 the safe example:
@@ -241,18 +260,22 @@ To prevent unauthorized access to your FastAPI resolver server:
 ### Firebase & Google Sign-In Setup
 To enable Google Sign-In and Cloud Sync:
 1. Place your `google-services.json` in `android/app/`.
-2. Go to **Firebase Console** -> **Project Settings** -> **Your Android App**.
-3. Obtain your signing certificate SHA-1 fingerprint:
+2. Set `AURORA_GOOGLE_WEB_CLIENT_ID` in `.env` (Firebase Console → Authentication → Google → **Web client ID**).
+3. Go to **Firebase Console** -> **Project Settings** -> **Your Android App**.
+4. Obtain your signing certificate SHA-1 fingerprint:
    ```bash
    cd android && ./gradlew signingReport
    ```
-4. Copy the `SHA-1` (and `SHA-256`) fingerprint for your debug/release keystore and add it under **SHA certificate fingerprints** in Firebase Console. *(Without SHA-1 registered in Firebase, Google Sign-In will return an error on mobile devices).*
+5. Copy the `SHA-1` (and `SHA-256`) fingerprint for your debug/release keystore and add it under **SHA certificate fingerprints** in Firebase Console. *(Without SHA-1 registered in Firebase, Google Sign-In will return an error on mobile devices).*
+6. Set `FIREBASE_PROJECT_ID` in `server/.env` to match your Firebase project.
 
 Grant the audio permission for the **On device** tab.
 
 ---
 
-## Publish an APK release
+## Publish releases
+
+### Android APK
 
 The Android workflow builds an installable APK for every `main` push and pull request. To
 publish a version, push a semantic version tag:
@@ -263,8 +286,24 @@ git push origin v1.0.0
 ```
 
 GitHub Actions uses the tag as the Android version, creates a GitHub Release with generated
-notes, and uploads `Aurora-Music.apk` plus its SHA-256 checksum. The website's download button
-always points to the newest published release.
+notes, and uploads `Aurora-Music.apk` plus its SHA-256 checksum.
+
+Build locally:
+
+```bash
+flutter build apk --release --dart-define-from-file=.env
+```
+
+### Docker server image
+
+Pushes to `main` that change `server/**` build and push [`marcinx98x/aurora-server`](https://hub.docker.com/r/marcinx98x/aurora-server) when these GitHub Actions secrets are set:
+
+| Secret | Value |
+|--------|--------|
+| `DOCKERHUB_USERNAME` | your Docker Hub username |
+| `DOCKERHUB_TOKEN` | Docker Hub access token (Read & Write) |
+
+You can also trigger **Publish Docker Hub** manually from the Actions tab.
 
 ---
 

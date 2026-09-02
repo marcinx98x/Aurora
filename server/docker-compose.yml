@@ -1,12 +1,13 @@
 services:
   aurora:
+    image: marcinx98x/aurora-server:latest
     build: .
     container_name: aurora-server
-    restart: always
-    network_mode: "host"
+    restart: unless-stopped
+    ports:
+      - "18000:8000"
     env_file:
       - .env
     volumes:
-      - ./.env:/app/.env
       - ./cache:/app/cache
       - ./data:/app/data

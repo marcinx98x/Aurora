@@ -1,8 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/db/local_store.dart';
+import '../../data/datasources/youtube_account_api.dart';
 import '../../data/repositories/api_music_repository.dart';
 import '../../domain/entities/track.dart';
 import '../../domain/repositories/music_repository.dart';
+import 'auth_controller.dart';
+import 'favorites_controller.dart';
 
 /// Overridden in main() with the initialized instance.
 final localStoreProvider = Provider<LocalStore>(
@@ -21,6 +24,91 @@ final trendingProvider = FutureProvider<List<Track>>(
   (ref) => ref.watch(musicRepositoryProvider).trending(),
 );
 
+final youtubeAccountApiProvider = Provider<YoutubeAccountApi>(
+  (ref) => YoutubeAccountApi(),
+);
+
+/// Personalized picks from listening history, liked songs, or global trends.
+final forYouProvider = FutureProvider<List<Track>>((ref) async {
+  ref.watch(syncRevisionProvider);
+  final repo = ref.watch(musicRepositoryProvider);
+  final stats = ref.watch(listeningStatsProvider);
+  final favorites = ref.watch(favoritesProvider);
+  final recentIds =
+      ref.watch(localStoreProvider).recents().map((t) => t.id).toSet();
+
+  final artistCounts = <String, int>{};
+  for (final row in stats) {
+    final artist = row.track.artist.trim();
+    if (artist.isEmpty || artist == 'Unknown') continue;
+    artistCounts[artist] = (artistCounts[artist] ?? 0) + row.count;
+  }
+  final topArtists = artistCounts.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  var artists = topArtists.take(3).map((e) => e.key).toList();
+
+  if (artists.isEmpty && favorites.isNotEmpty) {
+    artists = favorites.map((t) => t.artist.trim()).where((a) {
+      return a.isNotEmpty && a != 'Unknown';
+    }).toSet().take(3).toList();
+  }
+
+  if (artists.isEmpty) {
+    return _filterRecommendations(await repo.trending(), recentIds);
+  }
+
+  final merged = <Track>[];
+  final seen = <String>{};
+  for (final artist in artists) {
+    final tracks =
+        await repo.searchTracks('$artist music', limit: 8);
+    for (final track in tracks) {
+      if (seen.add(track.id)) merged.add(track);
+    }
+  }
+  return _filterRecommendations(merged, recentIds);
+});
+
+/// For-you suggestions that are not already downloaded offline.
+final quickDownloadsProvider = FutureProvider<List<Track>>((ref) async {
+  ref.watch(syncRevisionProvider);
+  final forYou = await ref.watch(forYouProvider.future);
+  final downloadedIds = ref
+      .watch(localStoreProvider)
+      .downloads()
+      .map((t) => t.id)
+      .toSet();
+  return forYou
+      .where((t) => !downloadedIds.contains(t.id))
+      .take(12)
+      .toList(growable: false);
+});
+
+/// Recent uploads from YouTube channels the user subscribes to.
+final fromYourChannelsProvider = FutureProvider<List<Track>>((ref) async {
+  final user = ref.watch(authStateProvider).valueOrNull;
+  if (user == null) return const [];
+
+  final token = await ref.read(authControllerProvider).youtubeAccessToken();
+  if (token == null) return const [];
+
+  return ref
+      .read(youtubeAccountApiProvider)
+      .fetchSubscriptionFeed(token, limit: 20);
+});
+
+List<Track> _filterRecommendations(List<Track> tracks, Set<String> excludeIds,
+    {int limit = 24}) {
+  final out = <Track>[];
+  final seen = <String>{};
+  for (final track in tracks) {
+    if (excludeIds.contains(track.id)) continue;
+    if (seen.add(track.id)) out.add(track);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 final recentlyPlayedProvider = FutureProvider<List<Track>>(
   (ref) {
     ref.watch(syncRevisionProvider);
@@ -29,7 +117,7 @@ final recentlyPlayedProvider = FutureProvider<List<Track>>(
 );
 
 final topChartsProvider = FutureProvider<List<Track>>(
-  (ref) => ref.watch(musicRepositoryProvider).search('top charts this week'),
+  (ref) => ref.watch(musicRepositoryProvider).topCharts(),
 );
 
 /// Tracks for an artist (real artist APIs aren't available client-side, so we

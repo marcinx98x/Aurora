@@ -3,7 +3,6 @@ import '../../core/config/app_config.dart';
 import '../../core/db/local_store.dart';
 import '../../domain/entities/track.dart';
 import '../../domain/repositories/music_repository.dart';
-import '../datasources/yt_stream_resolver.dart';
 
 /// Talks to the FastAPI + yt-dlp resolver. All YouTube extraction happens
 /// server-side, so the app never gets rate-limited / 403'd by googlevideo.
@@ -54,8 +53,50 @@ class ApiMusicRepository implements MusicRepository {
   }
 
   @override
-  Future<List<Track>> trending() async =>
-      _cache['trending'] ??= await _search('trending music 2026', 20);
+  Future<List<Track>> searchTracks(String query, {int limit = 25}) =>
+      _search(query, limit);
+
+  @override
+  Future<List<Track>> trending({bool refresh = false}) async {
+    if (refresh) _cache.remove('trending');
+    final cached = _cache['trending'];
+    if (cached != null) return cached;
+
+    final year = DateTime.now().year;
+    final queries = [
+      'trending music $year',
+      'new music releases $year',
+      'popular songs today',
+    ];
+    final q = queries[DateTime.now().day % queries.length];
+    return _cache['trending'] = await _search(q, 20);
+  }
+
+  @override
+  Future<List<Track>> topCharts() async {
+    final cached = _cache['topCharts'];
+    if (cached != null) return cached;
+
+    try {
+      final url =
+          'https://www.youtube.com/playlist?list=${AppConfig.topChartsPlaylistId}';
+      final res = await importPlaylist(url);
+      if (res.tracks.isNotEmpty) {
+        return _cache['topCharts'] =
+            res.tracks.take(25).toList(growable: false);
+      }
+    } catch (_) {
+      // Playlist unavailable on resolver — fall back to search below.
+    }
+
+    return _cache['topCharts'] = await _search('top charts this week', 25);
+  }
+
+  @override
+  void invalidateRecommendationCaches() {
+    _cache.remove('trending');
+    _cache.remove('topCharts');
+  }
 
   @override
   Future<List<Track>> recentlyPlayed() async => _store.recents();
@@ -63,8 +104,6 @@ class ApiMusicRepository implements MusicRepository {
   @override
   Future<List<Track>> downloads() async => _store.downloads();
 
-  /// Streamed through the resolver proxy (clean headers → no CDN 403).
-  /// Direct on-device play 403s in ExoPlayer; the proxy is the reliable path.
   @override
   Future<Uri> resolveStream(Track track, {bool audioOnly = true}) async {
     final secret = AppConfig.apiSecretKey;

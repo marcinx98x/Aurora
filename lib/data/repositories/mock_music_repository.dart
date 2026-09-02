@@ -20,7 +20,18 @@ class MockMusicRepository implements MusicRepository {
   }
 
   @override
-  Future<List<Track>> trending() => _delayed(MockTracks.trending);
+  Future<List<Track>> trending({bool refresh = false}) =>
+      _delayed(MockTracks.trending);
+
+  @override
+  Future<List<Track>> searchTracks(String query, {int limit = 25}) =>
+      search(query);
+
+  @override
+  Future<List<Track>> topCharts() => _delayed(MockTracks.trending);
+
+  @override
+  void invalidateRecommendationCaches() {}
 
   @override
   Future<List<Track>> recentlyPlayed() => _delayed(MockTracks.recent);

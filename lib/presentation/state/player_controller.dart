@@ -210,29 +210,34 @@ class PlayerController extends Notifier<PlayerState> {
 
     player.positionStream.listen((p) {
       if (!isCurrentPlayer()) return;
-      if (!_sessionRestorePending && !state.isLoading) {
+      if (!_sessionRestorePending) {
         final grew = p > _lastTick + const Duration(milliseconds: 80);
+        // Always advance the scrubber while audio runs — gating on isLoading
+        // froze the bar for the whole ensure/play window (or forever on a
+        // superseded load that never cleared the flag).
         state = state.copyWith(position: p);
-        if (_fadingOut) {
-          _stuckSince = null;
-        } else if (state.isPlaying &&
-            state.progress >= 0.995 &&
-            state.total > Duration.zero) {
-          final left = state.total - state.position;
-          if (!grew && left <= const Duration(seconds: 1)) {
-            _stuckSince ??= DateTime.now();
-            if (DateTime.now().difference(_stuckSince!) >=
-                const Duration(seconds: 3)) {
-              final id = state.current?.id;
-              if (id != null) {
-                _advanceToNext(fromTrackId: id, reason: 'stuck');
+        if (!state.isLoading) {
+          if (_fadingOut) {
+            _stuckSince = null;
+          } else if (state.isPlaying &&
+              state.progress >= 0.995 &&
+              state.total > Duration.zero) {
+            final left = state.total - state.position;
+            if (!grew && left <= const Duration(seconds: 1)) {
+              _stuckSince ??= DateTime.now();
+              if (DateTime.now().difference(_stuckSince!) >=
+                  const Duration(seconds: 3)) {
+                final id = state.current?.id;
+                if (id != null) {
+                  _advanceToNext(fromTrackId: id, reason: 'stuck');
+                }
               }
+            } else {
+              _stuckSince = null;
             }
           } else {
             _stuckSince = null;
           }
-        } else {
-          _stuckSince = null;
         }
       }
       _maybeFadeOut();
@@ -800,6 +805,10 @@ class PlayerController extends Notifier<PlayerState> {
               _player.position < const Duration(seconds: 2)) {
             await _player.seek(startAt);
           }
+          if (token != _loadToken) return;
+          // Source is ready — drop the spinner so the scrubber can move even
+          // if play() takes another moment.
+          state = state.copyWith(isLoading: false);
           if (autoplay) {
             final started = await _startPlayback(token);
             if (!started) {
@@ -817,6 +826,7 @@ class PlayerController extends Notifier<PlayerState> {
           // next source. Retry on a fresh native instance instead of forcing
           // the user to restart the whole app.
           _recreatePlayer();
+          state = state.copyWith(isLoading: true);
           await Future<void>.delayed(
               Duration(milliseconds: 500 * (attempt + 1)));
         }
@@ -825,7 +835,6 @@ class PlayerController extends Notifier<PlayerState> {
       if (token != _loadToken) return;
       _midStreamReloadCount = 0;
       _handlingStreamError = false;
-      state = state.copyWith(isLoading: false);
       if (track.id != _advanceFromId) _advanceFromId = null;
       _applyPalette(track);
       await _persistSession();
@@ -842,6 +851,8 @@ class PlayerController extends Notifier<PlayerState> {
         _handlingStreamError = false;
         if (failed) {
           state = state.copyWith(isLoading: false, error: 'Playback failed');
+        } else if (state.isLoading) {
+          state = state.copyWith(isLoading: false);
         }
       }
     }

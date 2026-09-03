@@ -162,6 +162,8 @@ class PlayerController extends Notifier<PlayerState> {
   /// is assigned synchronously, so another tap can immediately use it while
   /// the broken instance is being disposed in the background.
   void _recreatePlayer() {
+    _concat = null;
+    _windowQueueIndices = [];
     final broken = _player;
     _createPlayer();
     unawaited(broken.dispose());
@@ -225,30 +227,24 @@ class PlayerController extends Notifier<PlayerState> {
       _wasPlaying = ps.playing;
       if (ps.processingState == ja.ProcessingState.completed) _onComplete();
     });
-    // Handle skip buttons from the lock-screen / notification. When the user
-    // taps next/prev there, just_audio changes the index inside the
-    // ConcatenatingAudioSource. We translate that into our queue navigation.
+    // Native concat auto-advance / lock-screen skip. Sync Dart state to the
+    // already-playing child — never stop() or the background service dies.
     player.currentIndexStream.listen((newIdx) {
       if (!isCurrentPlayer()) return;
-      if (newIdx == null || state.isLoading) return;
-      // Ignore index changes caused by our own setAudioSource
+      if (newIdx == null || state.isLoading || _advancing) return;
       if (DateTime.now().difference(_lastSourceSetTime) <
           const Duration(milliseconds: 800)) {
         return;
       }
-      if (newIdx > _concatBaseIndex) {
-        _lastSourceSetTime = DateTime.now();
-        next();
-      } else if (newIdx < _concatBaseIndex) {
-        _lastSourceSetTime = DateTime.now();
-        previous();
-      }
+      _onNativeIndexChanged(newIdx);
     });
   }
 
-  /// Index of the "current" track within the ConcatenatingAudioSource window.
+  /// Index of the playing child inside [_concat].
   int _concatBaseIndex = 0;
   DateTime _lastSourceSetTime = DateTime.now();
+  ja.ConcatenatingAudioSource? _concat;
+  List<int> _windowQueueIndices = [];
 
   MediaItem _media(Track t) => MediaItem(
         id: t.id,
@@ -305,6 +301,12 @@ class PlayerController extends Notifier<PlayerState> {
   Future<void> next() async {
     if (state.queue.isEmpty) return;
     if (state.queue.length == 1) return;
+    if (!state.shuffle && _player.hasNext) {
+      await _player.seekToNext();
+      final idx = _player.currentIndex;
+      if (idx != null) _onNativeIndexChanged(idx);
+      return;
+    }
     int nextIndex;
     if (state.shuffle) {
       final rng = Random();
@@ -323,7 +325,17 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   Future<void> previous() async {
-    if (state.position.inSeconds > 3 || state.index == 0) {
+    if (state.position.inSeconds > 3) {
+      await _player.seek(Duration.zero);
+      return;
+    }
+    if (_player.hasPrevious) {
+      await _player.seekToPrevious();
+      final idx = _player.currentIndex;
+      if (idx != null) _onNativeIndexChanged(idx);
+      return;
+    }
+    if (state.index == 0) {
       await _player.seek(Duration.zero);
       return;
     }
@@ -336,6 +348,28 @@ class PlayerController extends Notifier<PlayerState> {
 
   Future<void> seek(double fraction) =>
       _player.seek(state.total * fraction.clamp(0.0, 1.0));
+
+  void _onNativeIndexChanged(int newIdx) {
+    if (newIdx < 0 || newIdx >= _windowQueueIndices.length) return;
+    if (newIdx == _concatBaseIndex) return;
+    final queueIdx = _windowQueueIndices[newIdx];
+    _concatBaseIndex = newIdx;
+    if (queueIdx == state.index) return;
+    _cancelFade();
+    unawaited(_player.setVolume(_baseVolume));
+    state = state.copyWith(
+      index: queueIdx,
+      position: Duration.zero,
+      duration: _player.duration ?? Duration.zero,
+    );
+    final track = state.current;
+    if (track != null) {
+      _recordRecent(track);
+      _applyPalette(track);
+    }
+    unawaited(_prefetchAfterAdvance());
+    unawaited(_persistSession());
+  }
 
   void _onComplete() {
     if (_advancing || state.isLoading) return;
@@ -354,6 +388,8 @@ class PlayerController extends Notifier<PlayerState> {
       _player.play();
       return;
     }
+    // Concat already has another child — native will (or did) advance.
+    if (_player.hasNext) return;
     next();
   }
 
@@ -380,7 +416,46 @@ class PlayerController extends Notifier<PlayerState> {
     return await ref.read(musicRepositoryProvider).resolveStream(track);
   }
 
-  Future<({ja.AudioSource source, int initialIndex})> _sourceWindow(
+  Map<String, String>? _headersFor(Uri value) =>
+      value.host.endsWith('.googlevideo.com') ? ytStreamHeaders : null;
+
+  ja.AudioSource _audioItem(Track value, Uri valueUri) => ja.AudioSource.uri(
+        valueUri,
+        tag: _media(value),
+        headers: _headersFor(valueUri),
+      );
+
+  Future<void> _prefetchAfterAdvance() async {
+    if (state.shuffle) return;
+    final concat = _concat;
+    if (concat == null) return;
+    final qi = state.index;
+    final q = state.queue;
+    if (qi + 1 >= q.length) return;
+    if (_windowQueueIndices.isNotEmpty &&
+        _windowQueueIndices.last == qi + 1) {
+      return;
+    }
+    try {
+      final track = q[qi + 1];
+      final uri = await _getTrackUri(track);
+      if (!identical(_concat, concat)) return;
+      await concat.add(_audioItem(track, uri));
+      _windowQueueIndices.add(qi + 1);
+    } catch (_) {}
+    try {
+      while (_windowQueueIndices.length > 3 &&
+          (_player.currentIndex ?? 0) > 0) {
+        if (!identical(_concat, concat)) return;
+        await concat.removeAt(0);
+        _windowQueueIndices.removeAt(0);
+      }
+    } catch (_) {}
+    _concatBaseIndex = _player.currentIndex ?? _concatBaseIndex;
+  }
+
+  Future<({ja.ConcatenatingAudioSource source, int initialIndex})>
+      _sourceWindow(
     Track track,
     Uri uri,
     int token,
@@ -388,22 +463,12 @@ class PlayerController extends Notifier<PlayerState> {
     final q = state.queue;
     final idx = state.index;
     final sources = <ja.AudioSource>[];
+    final indices = <int>[];
     var initialIndex = 0;
 
-    // These headers are needed only when a googlevideo URL is played directly.
-    // Keep requests to Aurora's own Range server free of YouTube-specific
-    // headers; reverse proxies can then handle them as normal audio requests.
-    Map<String, String>? headersFor(Uri value) =>
-        value.host.endsWith('.googlevideo.com') ? ytStreamHeaders : null;
-
-    ja.AudioSource item(Track value, Uri valueUri) => ja.AudioSource.uri(
-          valueUri,
-          tag: _media(value),
-          headers: headersFor(valueUri),
-        );
-
     if (q.length == 1) {
-      sources.add(item(track, uri));
+      sources.add(_audioItem(track, uri));
+      indices.add(idx);
     } else {
       if (idx > 0) {
         try {
@@ -412,7 +477,8 @@ class PlayerController extends Notifier<PlayerState> {
           if (token != _loadToken) {
             throw ja.PlayerInterruptedException('superseded load');
           }
-          sources.add(item(previous, previousUri));
+          sources.add(_audioItem(previous, previousUri));
+          indices.add(idx - 1);
           initialIndex = 1;
         } on ja.PlayerInterruptedException {
           rethrow;
@@ -420,21 +486,26 @@ class PlayerController extends Notifier<PlayerState> {
           // Adjacent track failed — current track still loads fine.
         }
       }
-      sources.add(item(track, uri));
-      if (idx < q.length - 1) {
+      sources.add(_audioItem(track, uri));
+      indices.add(idx);
+      // Sequential next is for native auto-advance. Shuffle must not
+      // preload the wrong song into the window.
+      if (!state.shuffle && idx < q.length - 1) {
         try {
           final next = q[idx + 1];
           final nextUri = await _getTrackUri(next);
           if (token != _loadToken) {
             throw ja.PlayerInterruptedException('superseded load');
           }
-          sources.add(item(next, nextUri));
+          sources.add(_audioItem(next, nextUri));
+          indices.add(idx + 1);
         } on ja.PlayerInterruptedException {
           rethrow;
         } catch (_) {}
       }
     }
 
+    _windowQueueIndices = indices;
     return (
       source: ja.ConcatenatingAudioSource(
         useLazyPreparation: true,
@@ -482,6 +553,7 @@ class PlayerController extends Notifier<PlayerState> {
         try {
           final window = await _sourceWindow(track, uri, token);
           if (token != _loadToken) return;
+          _concat = window.source;
           _concatBaseIndex = window.initialIndex;
           _lastSourceSetTime = DateTime.now();
           await _player.setAudioSource(

@@ -120,7 +120,7 @@ class PlayerController extends Notifier<PlayerState> {
   Duration _restoredStartAt = Duration.zero;
   String? _advanceFromId;
   DateTime? _stuckSince;
-  bool _midStreamReloaded = false;
+  int _midStreamReloadCount = 0;
   bool _handlingStreamError = false;
   String? _warmingId;
 
@@ -159,6 +159,14 @@ class PlayerController extends Notifier<PlayerState> {
     equalizer = ja.AndroidEqualizer();
     _player = ja.AudioPlayer(
       audioPipeline: ja.AudioPipeline(androidAudioEffects: [equalizer]),
+      audioLoadConfiguration: const ja.AudioLoadConfiguration(
+        androidLoadControl: ja.AndroidLoadControl(
+          minBufferDuration: Duration(seconds: 15),
+          maxBufferDuration: Duration(seconds: 50),
+          bufferForPlaybackDuration: Duration(seconds: 2),
+          bufferForPlaybackAfterRebufferDuration: Duration(seconds: 5),
+        ),
+      ),
     );
     _wireStreams(_player, ++_playerGeneration);
   }
@@ -271,7 +279,7 @@ class PlayerController extends Notifier<PlayerState> {
       _onNativeIndexChanged(newIdx);
     });
     // Mid-stream HTTP / ExoPlayer failures arrive as stream errors (0.9.x has
-    // no errorCode on PlaybackEvent). Reload the same track once; never skip.
+    // no errorCode on PlaybackEvent). Reload the same track (never skip).
     player.playbackEventStream.listen((_) {}, onError: (Object e, StackTrace st) {
       if (!isCurrentPlayer()) return;
       _onPlaybackStreamError(e, st);
@@ -283,8 +291,8 @@ class PlayerController extends Notifier<PlayerState> {
     if (_handlingStreamError) return;
     _handlingStreamError = true;
     debugPrint('[player] stream error: $e\n$st');
-    if (!_midStreamReloaded) {
-      _midStreamReloaded = true;
+    if (_midStreamReloadCount < 3) {
+      _midStreamReloadCount++;
       final startAt = state.position;
       unawaited(_loadCurrent(
         autoplay: true,
@@ -294,6 +302,34 @@ class PlayerController extends Notifier<PlayerState> {
     } else {
       _handlingStreamError = false;
       state = state.copyWith(isLoading: false, error: 'Playback failed');
+    }
+  }
+
+  /// Wait until the resolver has the file cached. ExoPlayer often times out
+  /// during a cold yt-dlp download; probing first makes setAudioSource a
+  /// fast Range hit on the same URL.
+  Future<void> _ensureStreamReady(
+    Uri uri, {
+    Duration timeout = const Duration(seconds: 90),
+  }) async {
+    if (!_uriIsRemote(uri)) return;
+    final client = HttpClient();
+    try {
+      client.connectionTimeout = const Duration(seconds: 20);
+      final req =
+          await client.getUrl(uri).timeout(const Duration(seconds: 20));
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1');
+      if (AppConfig.apiSecretKey.isNotEmpty) {
+        req.headers.set('x-api-key', AppConfig.apiSecretKey);
+      }
+      final res = await req.close().timeout(timeout);
+      final code = res.statusCode;
+      await res.drain<void>();
+      if (code >= 400) {
+        throw HttpException('stream not ready ($code)', uri: uri);
+      }
+    } finally {
+      client.close(force: true);
     }
   }
 
@@ -315,21 +351,7 @@ class PlayerController extends Notifier<PlayerState> {
     _warmingId = track.id;
     try {
       final uri = await ref.read(musicRepositoryProvider).resolveStream(track);
-      if (!_uriIsRemote(uri)) return;
-      final client = HttpClient();
-      try {
-        client.connectionTimeout = const Duration(seconds: 15);
-        final req =
-            await client.getUrl(uri).timeout(const Duration(seconds: 15));
-        req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1');
-        if (AppConfig.apiSecretKey.isNotEmpty) {
-          req.headers.set('x-api-key', AppConfig.apiSecretKey);
-        }
-        final res = await req.close().timeout(const Duration(seconds: 60));
-        await res.drain<void>();
-      } finally {
-        client.close(force: true);
-      }
+      await _ensureStreamReady(uri);
     } catch (e) {
       debugPrint('[player] warm next failed: $e');
     } finally {
@@ -643,14 +665,15 @@ class PlayerController extends Notifier<PlayerState> {
       // Do not stop() first: that tears down the media foreground service
       // before the next source can play. setAudioSource replaces the item.
 
-      // A resolver miss can be transient (a bad YouTube exit node, or a CDN
-      // Range connection closing during preparation). Rebuild the source and
-      // retry remote tracks; local-file errors are deterministic.
-      final attempts = track.localPath == null ? 3 : 2;
+      // Warm the remote stream first (long timeout), then hand ExoPlayer a
+      // cache hit. Retry the same track on transient resolver / player errors.
+      final attempts = track.localPath == null ? 5 : 2;
       for (var attempt = 0; attempt < attempts; attempt++) {
         try {
-          _lastSourceSetTime = DateTime.now();
           if (_uriIsRemote(uri)) {
+            await _ensureStreamReady(uri);
+            if (token != _loadToken) return;
+            _lastSourceSetTime = DateTime.now();
             _concat = null;
             _windowQueueIndices = [state.index];
             _concatBaseIndex = 0;
@@ -659,6 +682,7 @@ class PlayerController extends Notifier<PlayerState> {
               initialPosition: startAt,
             );
           } else {
+            _lastSourceSetTime = DateTime.now();
             final window = await _sourceWindow(track, uri, token);
             if (token != _loadToken) return;
             _concat = window.source;
@@ -674,7 +698,8 @@ class PlayerController extends Notifier<PlayerState> {
             await _player.seek(startAt);
           }
           break;
-        } catch (_) {
+        } catch (e) {
+          debugPrint('[player] load attempt ${attempt + 1}/$attempts: $e');
           if (token != _loadToken) return;
           if (attempt == attempts - 1) rethrow;
           // setAudioSource failures can leave ExoPlayer unable to accept the
@@ -682,12 +707,12 @@ class PlayerController extends Notifier<PlayerState> {
           // the user to restart the whole app.
           _recreatePlayer();
           await Future<void>.delayed(
-              Duration(milliseconds: 350 * (attempt + 1)));
+              Duration(milliseconds: 500 * (attempt + 1)));
         }
       }
 
       if (token != _loadToken) return;
-      _midStreamReloaded = false;
+      _midStreamReloadCount = 0;
       _handlingStreamError = false;
       state = state.copyWith(isLoading: false);
       if (autoplay) {
@@ -718,7 +743,7 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   Future<void> _waitUntilPlayable(int token) async {
-    const timeout = Duration(seconds: 8);
+    const timeout = Duration(seconds: 20);
     final ready = {ja.ProcessingState.ready, ja.ProcessingState.buffering};
     if (ready.contains(_player.processingState)) return;
     try {

@@ -25,6 +25,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -920,6 +921,30 @@ def _lock_for(video_id: str) -> threading.Lock:
         return lk
 
 
+@contextmanager
+def _cross_process_lock(video_id: str):
+    """Serialize yt-dlp across uvicorn workers (in-memory locks are per-process)."""
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    lock_path = os.path.join(_CACHE_DIR, f".{video_id}.lock")
+    with open(lock_path, "a+", encoding="utf-8") as fh:
+        try:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except ImportError:
+            # Windows / non-POSIX: rely on the in-process threading lock only.
+            pass
+        try:
+            yield
+        finally:
+            try:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                pass
+
+
 def _init_cache_db() -> None:
     """Create the persistent YouTube-ID index and adopt existing cache files."""
     global _cache_db_ready
@@ -1093,7 +1118,7 @@ def _ensure_local(video_id: str) -> str:
     path = os.path.join(_CACHE_DIR, f"{video_id}.mp4")
 
     lock = _lock_for(video_id)
-    with lock:
+    with lock, _cross_process_lock(video_id):
         # Another request may have finished it while we waited.
         cached = _cache_get(video_id)
         if cached:

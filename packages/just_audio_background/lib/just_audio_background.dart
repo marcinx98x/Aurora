@@ -637,8 +637,11 @@ class _PlayerAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> play() async {
+    // After EOS, restart from the start of the *current* item. skipToQueueItem(0)
+    // was wrong once Dart had already replaced the source for the next track.
     if (_justAudioEvent.processingState == ProcessingStateMessage.completed) {
-      await skipToQueueItem(0);
+      await (await _player)
+          .seek(SeekRequest(position: Duration.zero, index: null));
     }
     // Always send PlayRequest. After EOS the native player is stopped but
     // `_playing` can still be true, so skipping here left the next track

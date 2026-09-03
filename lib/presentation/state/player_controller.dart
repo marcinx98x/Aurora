@@ -123,6 +123,9 @@ class PlayerController extends Notifier<PlayerState> {
   int _midStreamReloadCount = 0;
   bool _handlingStreamError = false;
   String? _warmingId;
+  HttpClient? _warmClient;
+  Future<void>? _warmFuture;
+  Future<void> _streamProbeChain = Future<void>.value();
 
   @override
   PlayerState build() {
@@ -132,6 +135,7 @@ class PlayerController extends Notifier<PlayerState> {
       _sleepTimer?.cancel();
       _fadeTimer?.cancel();
       _sessionDebounce?.cancel();
+      _cancelWarm();
       _player.dispose();
     });
     return _initialStateFromSession() ?? const PlayerState();
@@ -209,11 +213,16 @@ class PlayerController extends Notifier<PlayerState> {
       if (!_sessionRestorePending && !state.isLoading) {
         final grew = p > _lastTick + const Duration(milliseconds: 80);
         state = state.copyWith(position: p);
-        if (state.isPlaying && state.progress >= 0.98 && state.total > Duration.zero) {
-          if (!grew) {
+        if (_fadingOut) {
+          _stuckSince = null;
+        } else if (state.isPlaying &&
+            state.progress >= 0.995 &&
+            state.total > Duration.zero) {
+          final left = state.total - state.position;
+          if (!grew && left <= const Duration(seconds: 1)) {
             _stuckSince ??= DateTime.now();
             if (DateTime.now().difference(_stuckSince!) >=
-                const Duration(milliseconds: 1200)) {
+                const Duration(seconds: 3)) {
               final id = state.current?.id;
               if (id != null) {
                 _advanceToNext(fromTrackId: id, reason: 'stuck');
@@ -311,13 +320,54 @@ class PlayerController extends Notifier<PlayerState> {
   Future<void> _ensureStreamReady(
     Uri uri, {
     Duration timeout = const Duration(seconds: 90),
+    String? trackId,
   }) async {
     if (!_uriIsRemote(uri)) return;
-    final client = HttpClient();
+
+    // Reuse an in-flight warm for this same track instead of a second GET.
+    if (trackId != null &&
+        _warmingId == trackId &&
+        _warmFuture != null) {
+      try {
+        await _warmFuture;
+        return;
+      } catch (_) {
+        // Warm failed — fall through to a fresh probe.
+      }
+    } else if (_warmingId != null && _warmingId != trackId) {
+      _cancelWarm();
+    }
+
+    await _enqueueStreamProbe(() => _httpRangeProbe(uri, timeout: timeout));
+  }
+
+  Future<void> _enqueueStreamProbe(Future<void> Function() action) {
+    final done = Completer<void>();
+    final previous = _streamProbeChain;
+    _streamProbeChain = done.future;
+    return () async {
+      try {
+        await previous;
+      } catch (_) {}
+      try {
+        await action();
+      } finally {
+        if (!done.isCompleted) done.complete();
+      }
+    }();
+  }
+
+  Future<void> _httpRangeProbe(
+    Uri uri, {
+    required Duration timeout,
+    HttpClient? client,
+  }) async {
+    final owned = client == null;
+    final http = client ?? HttpClient();
     try {
-      client.connectionTimeout = const Duration(seconds: 20);
+      http.connectionTimeout = const Duration(seconds: 20);
       final req =
-          await client.getUrl(uri).timeout(const Duration(seconds: 20));
+          await http.getUrl(uri).timeout(const Duration(seconds: 20));
       req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1');
       if (AppConfig.apiSecretKey.isNotEmpty) {
         req.headers.set('x-api-key', AppConfig.apiSecretKey);
@@ -329,14 +379,27 @@ class PlayerController extends Notifier<PlayerState> {
         throw HttpException('stream not ready ($code)', uri: uri);
       }
     } finally {
-      client.close(force: true);
+      if (owned) http.close(force: true);
     }
+  }
+
+  void _cancelWarm() {
+    try {
+      _warmClient?.close(force: true);
+    } catch (_) {}
+    _warmClient = null;
+    if (_warmingId != null) {
+      debugPrint('[player] warm cancelled id=$_warmingId');
+    }
+    _warmingId = null;
+    _warmFuture = null;
   }
 
   /// Best-effort Range GET so the next track is already in the server cache
   /// when we advance (avoids ExoPlayer timing out on a cold yt-dlp download).
   Future<void> _warmNextTrack() async {
     if (state.shuffle) return;
+    if (!_player.playing) return;
     final q = state.queue;
     if (q.length <= 1) return;
     var nextIdx = state.index + 1;
@@ -348,14 +411,36 @@ class PlayerController extends Notifier<PlayerState> {
     final track = q[nextIdx];
     if (track.localPath != null) return;
     if (_warmingId == track.id) return;
+    _cancelWarm();
     _warmingId = track.id;
-    try {
+    final client = HttpClient();
+    _warmClient = client;
+    final future = _enqueueStreamProbe(() async {
       final uri = await ref.read(musicRepositoryProvider).resolveStream(track);
-      await _ensureStreamReady(uri);
+      if (!_uriIsRemote(uri)) return;
+      if (_warmingId != track.id) {
+        throw StateError('warm superseded');
+      }
+      await _httpRangeProbe(
+        uri,
+        timeout: const Duration(seconds: 90),
+        client: client,
+      );
+    });
+    _warmFuture = future;
+    try {
+      await future;
     } catch (e) {
       debugPrint('[player] warm next failed: $e');
     } finally {
-      if (_warmingId == track.id) _warmingId = null;
+      if (identical(_warmClient, client)) _warmClient = null;
+      try {
+        client.close(force: true);
+      } catch (_) {}
+      if (_warmingId == track.id) {
+        _warmingId = null;
+        _warmFuture = null;
+      }
     }
   }
 
@@ -509,7 +594,16 @@ class PlayerController extends Notifier<PlayerState> {
     if (state.queue.length <= 1) return;
     _advanceFromId = fromTrackId;
     debugPrint('[player] advance from=$fromTrackId reason=$reason');
-    unawaited(next());
+    if (reason == 'completed') {
+      unawaited(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        if (_advanceFromId != fromTrackId) return;
+        if (state.current?.id != fromTrackId) return;
+        await next();
+      }());
+    } else {
+      unawaited(next());
+    }
   }
 
   Future<Uri> _getTrackUri(Track track) async {
@@ -659,6 +753,15 @@ class PlayerController extends Notifier<PlayerState> {
     if (recordRecent) _recordRecent(track);
     var failed = false;
     try {
+      // Reuse warm for this id; cancel warm for any other id.
+      if (_warmingId == track.id && _warmFuture != null) {
+        try {
+          await _warmFuture;
+        } catch (_) {}
+      } else {
+        _cancelWarm();
+      }
+
       final uri = await _getTrackUri(track);
       if (token != _loadToken) return;
 
@@ -671,7 +774,7 @@ class PlayerController extends Notifier<PlayerState> {
       for (var attempt = 0; attempt < attempts; attempt++) {
         try {
           if (_uriIsRemote(uri)) {
-            await _ensureStreamReady(uri);
+            await _ensureStreamReady(uri, trackId: track.id);
             if (token != _loadToken) return;
             _lastSourceSetTime = DateTime.now();
             _concat = null;
@@ -697,6 +800,14 @@ class PlayerController extends Notifier<PlayerState> {
               _player.position < const Duration(seconds: 2)) {
             await _player.seek(startAt);
           }
+          if (autoplay) {
+            final started = await _startPlayback(token);
+            if (!started) {
+              throw StateError('playback did not start');
+            }
+          } else {
+            await _player.setVolume(_baseVolume);
+          }
           break;
         } catch (e) {
           debugPrint('[player] load attempt ${attempt + 1}/$attempts: $e');
@@ -715,16 +826,10 @@ class PlayerController extends Notifier<PlayerState> {
       _midStreamReloadCount = 0;
       _handlingStreamError = false;
       state = state.copyWith(isLoading: false);
-      if (autoplay) {
-        await _startPlayback(token);
-      } else {
-        await _player.setVolume(_baseVolume);
-      }
-      if (token != _loadToken) return;
       if (track.id != _advanceFromId) _advanceFromId = null;
       _applyPalette(track);
       await _persistSession();
-      unawaited(_warmNextTrack());
+      if (_player.playing) unawaited(_warmNextTrack());
     } catch (e, st) {
       debugPrint('[player] load failed: $e\n$st');
       if (token == _loadToken) {
@@ -742,10 +847,12 @@ class PlayerController extends Notifier<PlayerState> {
     }
   }
 
-  Future<void> _waitUntilPlayable(int token) async {
+  Future<bool> _waitUntilPlayable(int token) async {
     const timeout = Duration(seconds: 20);
     final ready = {ja.ProcessingState.ready, ja.ProcessingState.buffering};
-    if (ready.contains(_player.processingState)) return;
+    if (ready.contains(_player.processingState)) {
+      return token == _loadToken;
+    }
     try {
       await _player.processingStateStream
           .where(ready.contains)
@@ -753,25 +860,28 @@ class PlayerController extends Notifier<PlayerState> {
           .timeout(timeout);
     } on TimeoutException {
       debugPrint('[player] wait ready timed out');
+      return false;
     }
-    if (token != _loadToken) return;
+    return token == _loadToken;
   }
 
-  Future<void> _startPlayback(int token) async {
+  Future<bool> _startPlayback(int token) async {
     _cancelFade();
     await _player.setVolume(_baseVolume);
-    if (token != _loadToken) return;
-    await _waitUntilPlayable(token);
-    if (token != _loadToken) return;
+    if (token != _loadToken) return false;
+    final ready = await _waitUntilPlayable(token);
+    if (!ready || token != _loadToken) return false;
     await _player.play();
-    if (token != _loadToken) return;
+    if (token != _loadToken) return false;
     if (!_player.playing) {
       await Future<void>.delayed(const Duration(milliseconds: 200));
-      if (token != _loadToken) return;
+      if (token != _loadToken) return false;
       await _player.play();
     }
-    if (token != _loadToken) return;
-    if (_player.playing) _fadeIn();
+    if (token != _loadToken) return false;
+    if (!_player.playing) return false;
+    _fadeIn();
+    return true;
   }
   // One player can only render one stream, so this is a fade-out into a
   // fade-in rather than two tracks overlapping. It removes the hard cut

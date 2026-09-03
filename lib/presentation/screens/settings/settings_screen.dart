@@ -248,7 +248,13 @@ class _AccountSection extends ConsumerWidget {
                     style: text.bodyMedium),
                 onTap: () async {
                   try {
-                    await authController.signInWithGoogle();
+                    final user = await authController.signInWithGoogle();
+                    if (!context.mounted) return;
+                    if (user == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Sign-in cancelled')),
+                      );
+                    }
                   } catch (error) {
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -282,8 +288,10 @@ class _AccountSection extends ConsumerWidget {
               trailing: IconButton(
                 icon: const Icon(Icons.logout_rounded),
                 onPressed: () async {
-                  await ref.read(syncServiceProvider).flushSnapshot();
+                  final sync = ref.read(syncServiceProvider);
+                  await sync.flushSnapshot();
                   await authController.signOut();
+                  await sync.onSignedOut();
                 },
               ),
             );

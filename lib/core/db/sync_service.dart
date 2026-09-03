@@ -54,6 +54,7 @@ class SyncService {
   late final StreamSubscription<void> _changeSubscription;
   Timer? _uploadDebounce;
   bool _syncing = false;
+  bool _clearingAccount = false;
 
   Future<Options?> _authOptions() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -151,12 +152,19 @@ class SyncService {
     await _pushSnapshot();
   }
 
+  /// Idempotent: safe if Settings awaits this and the auth listener also fires.
   Future<void> onSignedOut() async {
-    _uploadDebounce?.cancel();
-    final store = _ref.read(localStoreProvider);
-    await store.clearAccountData();
-    await store.setLastAccountUid(null);
-    _notifyLocalChanged();
+    if (_clearingAccount) return;
+    _clearingAccount = true;
+    try {
+      _uploadDebounce?.cancel();
+      final store = _ref.read(localStoreProvider);
+      await store.clearAccountData();
+      await store.setLastAccountUid(null);
+      _notifyLocalChanged();
+    } finally {
+      _clearingAccount = false;
+    }
   }
 
   Future<void> pushFavorite(Track track, bool isLiked) async {

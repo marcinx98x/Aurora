@@ -25,11 +25,17 @@ class AuthController {
       );
     }
 
-    final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+    var googleUser = await _googleSignIn.signIn();
     if (googleUser == null) return null;
 
-    final GoogleSignInAuthentication googleAuth =
-        await googleUser.authentication;
+    var googleAuth = await googleUser.authentication;
+    if (googleAuth.idToken == null || googleAuth.idToken!.isEmpty) {
+      // Stale Play Services session after logout can yield an empty idToken.
+      await _clearGoogleSession();
+      googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) return null;
+      googleAuth = await googleUser.authentication;
+    }
 
     if (googleAuth.idToken == null || googleAuth.idToken!.isEmpty) {
       throw FirebaseAuthException(
@@ -72,8 +78,16 @@ class AuthController {
   }
 
   Future<void> signOut() async {
-    await _googleSignIn.signOut();
+    await _clearGoogleSession();
     await _auth.signOut();
+  }
+
+  Future<void> _clearGoogleSession() async {
+    try {
+      await _googleSignIn.disconnect();
+    } catch (_) {
+      await _googleSignIn.signOut();
+    }
   }
 
   /// Returns a Google access token with [AppConfig.youtubeReadonlyScope], or

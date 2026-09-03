@@ -120,7 +120,6 @@ class PlayerController extends Notifier<PlayerState> {
   Duration _restoredStartAt = Duration.zero;
   String? _advanceFromId;
   DateTime? _stuckSince;
-  int _consecutiveLoadFailures = 0;
   bool _midStreamReloaded = false;
   bool _handlingStreamError = false;
   String? _warmingId;
@@ -272,7 +271,7 @@ class PlayerController extends Notifier<PlayerState> {
       _onNativeIndexChanged(newIdx);
     });
     // Mid-stream HTTP / ExoPlayer failures arrive as stream errors (0.9.x has
-    // no errorCode on PlaybackEvent). Reload once, then skip.
+    // no errorCode on PlaybackEvent). Reload the same track once; never skip.
     player.playbackEventStream.listen((_) {}, onError: (Object e, StackTrace st) {
       if (!isCurrentPlayer()) return;
       _onPlaybackStreamError(e, st);
@@ -292,21 +291,6 @@ class PlayerController extends Notifier<PlayerState> {
         startAt: startAt,
         recordRecent: false,
       ));
-    } else {
-      unawaited(_skipAfterFailure());
-    }
-  }
-
-  /// After retries are exhausted (or mid-stream reload failed), skip ahead
-  /// unless the server looks fully down (3 consecutive failures).
-  Future<void> _skipAfterFailure() async {
-    _consecutiveLoadFailures++;
-    if (_consecutiveLoadFailures < 3 && state.queue.length > 1) {
-      state = state.copyWith(
-        isLoading: false,
-        error: 'Skipped — could not play track',
-      );
-      await next();
     } else {
       _handlingStreamError = false;
       state = state.copyWith(isLoading: false, error: 'Playback failed');
@@ -703,7 +687,6 @@ class PlayerController extends Notifier<PlayerState> {
       }
 
       if (token != _loadToken) return;
-      _consecutiveLoadFailures = 0;
       _midStreamReloaded = false;
       _handlingStreamError = false;
       state = state.copyWith(isLoading: false);
@@ -727,7 +710,9 @@ class PlayerController extends Notifier<PlayerState> {
       if (token == _loadToken) {
         _advancing = false;
         _handlingStreamError = false;
-        if (failed) unawaited(_skipAfterFailure());
+        if (failed) {
+          state = state.copyWith(isLoading: false, error: 'Playback failed');
+        }
       }
     }
   }

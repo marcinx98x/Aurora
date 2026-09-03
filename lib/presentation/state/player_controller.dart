@@ -301,11 +301,15 @@ class PlayerController extends Notifier<PlayerState> {
   Future<void> next() async {
     if (state.queue.isEmpty) return;
     if (state.queue.length == 1) return;
-    if (!state.shuffle && _player.hasNext) {
-      await _player.seekToNext();
-      final idx = _player.currentIndex;
-      if (idx != null) _onNativeIndexChanged(idx);
-      return;
+    // Native already moved to another concat child — sync only, do not reload.
+    if (_player.playing) {
+      final nativeIdx = _player.currentIndex;
+      if (nativeIdx != null &&
+          nativeIdx != _concatBaseIndex &&
+          nativeIdx < _windowQueueIndices.length) {
+        _onNativeIndexChanged(nativeIdx);
+        return;
+      }
     }
     int nextIndex;
     if (state.shuffle) {
@@ -329,11 +333,14 @@ class PlayerController extends Notifier<PlayerState> {
       await _player.seek(Duration.zero);
       return;
     }
-    if (_player.hasPrevious) {
-      await _player.seekToPrevious();
-      final idx = _player.currentIndex;
-      if (idx != null) _onNativeIndexChanged(idx);
-      return;
+    if (_player.playing) {
+      final nativeIdx = _player.currentIndex;
+      if (nativeIdx != null &&
+          nativeIdx < _concatBaseIndex &&
+          nativeIdx < _windowQueueIndices.length) {
+        _onNativeIndexChanged(nativeIdx);
+        return;
+      }
     }
     if (state.index == 0) {
       await _player.seek(Duration.zero);
@@ -388,9 +395,8 @@ class PlayerController extends Notifier<PlayerState> {
       _player.play();
       return;
     }
-    // Concat already has another child — native will (or did) advance.
-    if (_player.hasNext) return;
-    next();
+    // Queue in Dart is the source of truth — not ConcatenatingAudioSource.hasNext.
+    unawaited(next());
   }
 
   Future<Uri> _getTrackUri(Track track) async {
@@ -425,6 +431,9 @@ class PlayerController extends Notifier<PlayerState> {
         headers: _headersFor(valueUri),
       );
 
+  bool _uriIsRemote(Uri uri) =>
+      uri.scheme == 'http' || uri.scheme == 'https';
+
   Future<void> _prefetchAfterAdvance() async {
     if (state.shuffle) return;
     final concat = _concat;
@@ -439,6 +448,7 @@ class PlayerController extends Notifier<PlayerState> {
     try {
       final track = q[qi + 1];
       final uri = await _getTrackUri(track);
+      if (_uriIsRemote(uri)) return;
       if (!identical(_concat, concat)) return;
       await concat.add(_audioItem(track, uri));
       _windowQueueIndices.add(qi + 1);
@@ -466,7 +476,9 @@ class PlayerController extends Notifier<PlayerState> {
     final indices = <int>[];
     var initialIndex = 0;
 
-    if (q.length == 1) {
+    // HTTP streams share one blocking uvicorn worker. Only one /stream
+    // connection at a time — never concat a remote next/prev.
+    if (_uriIsRemote(uri) || q.length == 1) {
       sources.add(_audioItem(track, uri));
       indices.add(idx);
     } else {
@@ -477,19 +489,17 @@ class PlayerController extends Notifier<PlayerState> {
           if (token != _loadToken) {
             throw ja.PlayerInterruptedException('superseded load');
           }
-          sources.add(_audioItem(previous, previousUri));
-          indices.add(idx - 1);
-          initialIndex = 1;
+          if (!_uriIsRemote(previousUri)) {
+            sources.add(_audioItem(previous, previousUri));
+            indices.add(idx - 1);
+            initialIndex = 1;
+          }
         } on ja.PlayerInterruptedException {
           rethrow;
-        } catch (_) {
-          // Adjacent track failed — current track still loads fine.
-        }
+        } catch (_) {}
       }
       sources.add(_audioItem(track, uri));
       indices.add(idx);
-      // Sequential next is for native auto-advance. Shuffle must not
-      // preload the wrong song into the window.
       if (!state.shuffle && idx < q.length - 1) {
         try {
           final next = q[idx + 1];
@@ -497,8 +507,10 @@ class PlayerController extends Notifier<PlayerState> {
           if (token != _loadToken) {
             throw ja.PlayerInterruptedException('superseded load');
           }
-          sources.add(_audioItem(next, nextUri));
-          indices.add(idx + 1);
+          if (!_uriIsRemote(nextUri)) {
+            sources.add(_audioItem(next, nextUri));
+            indices.add(idx + 1);
+          }
         } on ja.PlayerInterruptedException {
           rethrow;
         } catch (_) {}
@@ -535,15 +547,8 @@ class PlayerController extends Notifier<PlayerState> {
       final uri = await _getTrackUri(track);
       if (token != _loadToken) return;
 
-      // Stop first so a slow server response from the previous tap cannot
-      // finish later and replace the newly selected song.
-      try {
-        await _player.stop();
-      } catch (_) {
-        if (token != _loadToken) return;
-        _recreatePlayer();
-      }
-      if (token != _loadToken) return;
+      // Do not stop() first: that tears down the media foreground service
+      // before the next source can play. setAudioSource replaces the item.
 
       // A resolver miss can be transient (a bad YouTube exit node, or a CDN
       // Range connection closing during preparation). Rebuild the source and

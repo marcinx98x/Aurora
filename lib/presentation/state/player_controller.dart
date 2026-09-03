@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:palette_generator/palette_generator.dart';
+import '../../core/config/app_config.dart';
 import '../../core/notifications/notification_service.dart';
 import '../../core/theme/dynamic_palette.dart';
 import '../../data/datasources/yt_stream_resolver.dart';
@@ -119,6 +120,10 @@ class PlayerController extends Notifier<PlayerState> {
   Duration _restoredStartAt = Duration.zero;
   String? _advanceFromId;
   DateTime? _stuckSince;
+  int _consecutiveLoadFailures = 0;
+  bool _midStreamReloaded = false;
+  bool _handlingStreamError = false;
+  String? _warmingId;
 
   @override
   PlayerState build() {
@@ -266,6 +271,86 @@ class PlayerController extends Notifier<PlayerState> {
       }
       _onNativeIndexChanged(newIdx);
     });
+    // Mid-stream HTTP / ExoPlayer failures arrive as stream errors (0.9.x has
+    // no errorCode on PlaybackEvent). Reload once, then skip.
+    player.playbackEventStream.listen((_) {}, onError: (Object e, StackTrace st) {
+      if (!isCurrentPlayer()) return;
+      _onPlaybackStreamError(e, st);
+    });
+  }
+
+  void _onPlaybackStreamError(Object e, StackTrace st) {
+    if (state.isLoading || _advancing || _sessionRestorePending) return;
+    if (_handlingStreamError) return;
+    _handlingStreamError = true;
+    debugPrint('[player] stream error: $e\n$st');
+    if (!_midStreamReloaded) {
+      _midStreamReloaded = true;
+      final startAt = state.position;
+      unawaited(_loadCurrent(
+        autoplay: true,
+        startAt: startAt,
+        recordRecent: false,
+      ));
+    } else {
+      unawaited(_skipAfterFailure());
+    }
+  }
+
+  /// After retries are exhausted (or mid-stream reload failed), skip ahead
+  /// unless the server looks fully down (3 consecutive failures).
+  Future<void> _skipAfterFailure() async {
+    _consecutiveLoadFailures++;
+    if (_consecutiveLoadFailures < 3 && state.queue.length > 1) {
+      state = state.copyWith(
+        isLoading: false,
+        error: 'Skipped — could not play track',
+      );
+      await next();
+    } else {
+      _handlingStreamError = false;
+      state = state.copyWith(isLoading: false, error: 'Playback failed');
+    }
+  }
+
+  /// Best-effort Range GET so the next track is already in the server cache
+  /// when we advance (avoids ExoPlayer timing out on a cold yt-dlp download).
+  Future<void> _warmNextTrack() async {
+    if (state.shuffle) return;
+    final q = state.queue;
+    if (q.length <= 1) return;
+    var nextIdx = state.index + 1;
+    if (nextIdx >= q.length) {
+      if (state.repeat != LoopMode.all) return;
+      nextIdx = 0;
+    }
+    if (nextIdx == state.index) return;
+    final track = q[nextIdx];
+    if (track.localPath != null) return;
+    if (_warmingId == track.id) return;
+    _warmingId = track.id;
+    try {
+      final uri = await ref.read(musicRepositoryProvider).resolveStream(track);
+      if (!_uriIsRemote(uri)) return;
+      final client = HttpClient();
+      try {
+        client.connectionTimeout = const Duration(seconds: 15);
+        final req =
+            await client.getUrl(uri).timeout(const Duration(seconds: 15));
+        req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1');
+        if (AppConfig.apiSecretKey.isNotEmpty) {
+          req.headers.set('x-api-key', AppConfig.apiSecretKey);
+        }
+        final res = await req.close().timeout(const Duration(seconds: 60));
+        await res.drain<void>();
+      } finally {
+        client.close(force: true);
+      }
+    } catch (e) {
+      debugPrint('[player] warm next failed: $e');
+    } finally {
+      if (_warmingId == track.id) _warmingId = null;
+    }
   }
 
   /// Index of the playing child inside [_concat].
@@ -566,6 +651,7 @@ class PlayerController extends Notifier<PlayerState> {
       position: startAt > Duration.zero ? startAt : Duration.zero,
     );
     if (recordRecent) _recordRecent(track);
+    var failed = false;
     try {
       final uri = await _getTrackUri(track);
       if (token != _loadToken) return;
@@ -617,6 +703,9 @@ class PlayerController extends Notifier<PlayerState> {
       }
 
       if (token != _loadToken) return;
+      _consecutiveLoadFailures = 0;
+      _midStreamReloaded = false;
+      _handlingStreamError = false;
       state = state.copyWith(isLoading: false);
       if (autoplay) {
         await _startPlayback(token);
@@ -627,14 +716,19 @@ class PlayerController extends Notifier<PlayerState> {
       if (track.id != _advanceFromId) _advanceFromId = null;
       _applyPalette(track);
       await _persistSession();
+      unawaited(_warmNextTrack());
     } catch (e, st) {
       debugPrint('[player] load failed: $e\n$st');
       if (token == _loadToken) {
         _recreatePlayer();
-        state = state.copyWith(isLoading: false, error: 'Playback failed');
+        failed = true;
       }
     } finally {
-      if (token == _loadToken) _advancing = false;
+      if (token == _loadToken) {
+        _advancing = false;
+        _handlingStreamError = false;
+        if (failed) unawaited(_skipAfterFailure());
+      }
     }
   }
 

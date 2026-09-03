@@ -619,8 +619,7 @@ class PlayerController extends Notifier<PlayerState> {
       if (token != _loadToken) return;
       state = state.copyWith(isLoading: false);
       if (autoplay) {
-        _fadeIn();
-        await _player.play();
+        await _startPlayback(token);
       } else {
         await _player.setVolume(_baseVolume);
       }
@@ -639,7 +638,37 @@ class PlayerController extends Notifier<PlayerState> {
     }
   }
 
-  // --- Crossfade ----------------------------------------------------------
+  Future<void> _waitUntilPlayable(int token) async {
+    const timeout = Duration(seconds: 8);
+    final ready = {ja.ProcessingState.ready, ja.ProcessingState.buffering};
+    if (ready.contains(_player.processingState)) return;
+    try {
+      await _player.processingStateStream
+          .where(ready.contains)
+          .first
+          .timeout(timeout);
+    } on TimeoutException {
+      debugPrint('[player] wait ready timed out');
+    }
+    if (token != _loadToken) return;
+  }
+
+  Future<void> _startPlayback(int token) async {
+    _cancelFade();
+    await _player.setVolume(_baseVolume);
+    if (token != _loadToken) return;
+    await _waitUntilPlayable(token);
+    if (token != _loadToken) return;
+    await _player.play();
+    if (token != _loadToken) return;
+    if (!_player.playing) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      if (token != _loadToken) return;
+      await _player.play();
+    }
+    if (token != _loadToken) return;
+    if (_player.playing) _fadeIn();
+  }
   // One player can only render one stream, so this is a fade-out into a
   // fade-in rather than two tracks overlapping. It removes the hard cut
   // between songs, which is what the setting is for; a true overlap would

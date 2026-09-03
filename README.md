@@ -52,7 +52,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 ### <img src="docs/icons/play.svg" width="18" align="top"> Playback
 - Audio streams through the proxy as `audio/mp4` over HTTP **Range** — seeking is instant.
 - **Dual source**: remote YouTube and local device files run through the same `just_audio` engine.
-- Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**. The app holds the full playlist in memory and **loads the next track when the current one ends** (including with the app minimized). Remote songs use **one HTTP stream at a time** so the resolver is not blocked by a second `/stream` while the first is still playing.
+- Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**. The app holds the full playlist in memory and **always loads the next track when the current one ends** (foreground or minimized), then **starts playback without a Play tap**. End-of-track is detected even when ExoPlayer never emits `completed` (HTTP streams often go `idle` or stick on the last frame). Remote songs use a **single `AudioSource.uri`** and **one HTTP stream at a time**, so the resolver is not blocked by a second `/stream` while the first is still playing.
 - **Crossfade**, 2–12 s, adjustable.
 - **Remember playback position** (Settings → Audio, on by default) — after closing the app, the **mini-player** reappears immediately with the last track, artwork, and progress bar. Audio loads only when you press Play and resumes from the saved scrub position. Session data stays on-device (not synced to the server).
 - **Sleep timer**: 5–60 min presets or **End of track**, with a 10-second fade-out. Open it from the **⋯** menu on the Now Playing screen.

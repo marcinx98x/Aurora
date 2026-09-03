@@ -640,12 +640,13 @@ class _PlayerAudioHandler extends BaseAudioHandler
     if (_justAudioEvent.processingState == ProcessingStateMessage.completed) {
       await skipToQueueItem(0);
     }
-    if (!_playing) {
-      _updatePosition();
-      customEvent.add(_PlayingEvent(_playing = true));
-      _broadcastState();
-      await (await _player).play(PlayRequest());
-    }
+    // Always send PlayRequest. After EOS the native player is stopped but
+    // `_playing` can still be true, so skipping here left the next track
+    // loaded and paused until the user tapped Play.
+    _updatePosition();
+    customEvent.add(_PlayingEvent(_playing = true));
+    _broadcastState();
+    await (await _player).play(PlayRequest());
   }
 
   @override

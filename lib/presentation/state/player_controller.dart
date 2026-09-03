@@ -103,9 +103,8 @@ class PlayerState {
       );
 }
 
-/// Playback engine on just_audio. The whole queue is loaded as a
-/// ConcatenatingAudioSource so the OS lock-screen / notification gets real
-/// next / previous / seek controls and playback is gapless.
+/// Playback engine on just_audio. Remote tracks are a single AudioSource.uri
+/// so end-of-stream is detectable; the Dart queue decides what plays next.
 class PlayerController extends Notifier<PlayerState> {
   late ja.AudioPlayer _player;
   late ja.AndroidEqualizer equalizer; // exposed to the EQ screen
@@ -118,6 +117,8 @@ class PlayerController extends Notifier<PlayerState> {
   bool _advancing = false;
   bool _sessionRestorePending = false;
   Duration _restoredStartAt = Duration.zero;
+  String? _advanceFromId;
+  DateTime? _stuckSince;
 
   @override
   PlayerState build() {
@@ -194,7 +195,24 @@ class PlayerController extends Notifier<PlayerState> {
     player.positionStream.listen((p) {
       if (!isCurrentPlayer()) return;
       if (!_sessionRestorePending && !state.isLoading) {
+        final grew = p > _lastTick + const Duration(milliseconds: 80);
         state = state.copyWith(position: p);
+        if (state.isPlaying && state.progress >= 0.98 && state.total > Duration.zero) {
+          if (!grew) {
+            _stuckSince ??= DateTime.now();
+            if (DateTime.now().difference(_stuckSince!) >=
+                const Duration(milliseconds: 1200)) {
+              final id = state.current?.id;
+              if (id != null) {
+                _advanceToNext(fromTrackId: id, reason: 'stuck');
+              }
+            }
+          } else {
+            _stuckSince = null;
+          }
+        } else {
+          _stuckSince = null;
+        }
       }
       _maybeFadeOut();
       final id = state.current?.id;
@@ -220,15 +238,25 @@ class PlayerController extends Notifier<PlayerState> {
     });
     player.playerStateStream.listen((ps) {
       if (!isCurrentPlayer()) return;
+      final wasPlaying = _wasPlaying;
       state = state.copyWith(isPlaying: ps.playing);
-      if (_wasPlaying && !ps.playing) {
+      if (wasPlaying && !ps.playing) {
         unawaited(persistSessionNow());
       }
       _wasPlaying = ps.playing;
-      if (ps.processingState == ja.ProcessingState.completed) _onComplete();
+      final id = state.current?.id;
+      if (id == null) return;
+      if (ps.processingState == ja.ProcessingState.completed) {
+        _advanceToNext(fromTrackId: id, reason: 'completed');
+        return;
+      }
+      if (wasPlaying &&
+          !ps.playing &&
+          ps.processingState == ja.ProcessingState.idle &&
+          _isNearEnd()) {
+        _advanceToNext(fromTrackId: id, reason: 'idle-end');
+      }
     });
-    // Native concat auto-advance / lock-screen skip. Sync Dart state to the
-    // already-playing child — never stop() or the background service dies.
     player.currentIndexStream.listen((newIdx) {
       if (!isCurrentPlayer()) return;
       if (newIdx == null || state.isLoading || _advancing) return;
@@ -301,16 +329,8 @@ class PlayerController extends Notifier<PlayerState> {
   Future<void> next() async {
     if (state.queue.isEmpty) return;
     if (state.queue.length == 1) return;
-    // Native already moved to another concat child — sync only, do not reload.
-    if (_player.playing) {
-      final nativeIdx = _player.currentIndex;
-      if (nativeIdx != null &&
-          nativeIdx != _concatBaseIndex &&
-          nativeIdx < _windowQueueIndices.length) {
-        _onNativeIndexChanged(nativeIdx);
-        return;
-      }
-    }
+    final from = state.current?.id;
+    if (from != null) _advanceFromId = from;
     int nextIndex;
     if (state.shuffle) {
       final rng = Random();
@@ -332,15 +352,6 @@ class PlayerController extends Notifier<PlayerState> {
     if (state.position.inSeconds > 3) {
       await _player.seek(Duration.zero);
       return;
-    }
-    if (_player.playing) {
-      final nativeIdx = _player.currentIndex;
-      if (nativeIdx != null &&
-          nativeIdx < _concatBaseIndex &&
-          nativeIdx < _windowQueueIndices.length) {
-        _onNativeIndexChanged(nativeIdx);
-        return;
-      }
     }
     if (state.index == 0) {
       await _player.seek(Duration.zero);
@@ -378,10 +389,19 @@ class PlayerController extends Notifier<PlayerState> {
     unawaited(_persistSession());
   }
 
-  void _onComplete() {
-    if (_advancing || state.isLoading) return;
-    // "Stop after this track" wins over every continuation rule.
+  bool _isNearEnd() {
+    final total = state.total;
+    if (total <= Duration.zero) return false;
+    final left = total - state.position;
+    return state.progress >= 0.96 || left <= const Duration(seconds: 2);
+  }
+
+  void _advanceToNext(
+      {required String fromTrackId, required String reason}) {
+    if (_advanceFromId == fromTrackId) return;
+    if (state.current?.id != fromTrackId) return;
     if (state.sleepAtTrackEnd) {
+      _advanceFromId = fromTrackId;
       _sleepTimer?.cancel();
       _player.pause();
       _player.setVolume(_baseVolume);
@@ -391,11 +411,13 @@ class PlayerController extends Notifier<PlayerState> {
       return;
     }
     if (state.repeat == LoopMode.one) {
-      _player.seek(Duration.zero);
-      _player.play();
+      unawaited(_player.seek(Duration.zero));
+      unawaited(_player.play());
       return;
     }
-    // Queue in Dart is the source of truth — not ConcatenatingAudioSource.hasNext.
+    if (state.queue.length <= 1) return;
+    _advanceFromId = fromTrackId;
+    debugPrint('[player] advance from=$fromTrackId reason=$reason');
     unawaited(next());
   }
 
@@ -537,6 +559,7 @@ class PlayerController extends Notifier<PlayerState> {
     if (track == null) return;
     final token = ++_loadToken;
     _advancing = true;
+    _stuckSince = null;
     _cancelFade();
     state = state.copyWith(
       isLoading: true,
@@ -556,16 +579,26 @@ class PlayerController extends Notifier<PlayerState> {
       final attempts = track.localPath == null ? 3 : 2;
       for (var attempt = 0; attempt < attempts; attempt++) {
         try {
-          final window = await _sourceWindow(track, uri, token);
-          if (token != _loadToken) return;
-          _concat = window.source;
-          _concatBaseIndex = window.initialIndex;
           _lastSourceSetTime = DateTime.now();
-          await _player.setAudioSource(
-            window.source,
-            initialIndex: window.initialIndex,
-            initialPosition: startAt,
-          );
+          if (_uriIsRemote(uri)) {
+            _concat = null;
+            _windowQueueIndices = [state.index];
+            _concatBaseIndex = 0;
+            await _player.setAudioSource(
+              _audioItem(track, uri),
+              initialPosition: startAt,
+            );
+          } else {
+            final window = await _sourceWindow(track, uri, token);
+            if (token != _loadToken) return;
+            _concat = window.source;
+            _concatBaseIndex = window.initialIndex;
+            await _player.setAudioSource(
+              window.source,
+              initialIndex: window.initialIndex,
+              initialPosition: startAt,
+            );
+          }
           if (startAt > Duration.zero &&
               _player.position < const Duration(seconds: 2)) {
             await _player.seek(startAt);
@@ -592,6 +625,7 @@ class PlayerController extends Notifier<PlayerState> {
         await _player.setVolume(_baseVolume);
       }
       if (token != _loadToken) return;
+      if (track.id != _advanceFromId) _advanceFromId = null;
       _applyPalette(track);
       await _persistSession();
     } catch (e, st) {

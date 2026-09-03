@@ -52,7 +52,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 ### <img src="docs/icons/play.svg" width="18" align="top"> Playback
 - Audio streams through the proxy as `audio/mp4` over HTTP **Range** — seeking is instant.
 - **Dual source**: remote YouTube and local device files run through the same `just_audio` engine.
-- Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**.
+- Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**. The app holds the full playlist in memory and **loads the next track when the current one ends** (including with the app minimized). Remote songs use **one HTTP stream at a time** so the resolver is not blocked by a second `/stream` while the first is still playing.
 - **Crossfade**, 2–12 s, adjustable.
 - **Remember playback position** (Settings → Audio, on by default) — after closing the app, the **mini-player** reappears immediately with the last track, artwork, and progress bar. Audio loads only when you press Play and resumes from the saved scrub position. Session data stays on-device (not synced to the server).
 - **Sleep timer**: 5–60 min presets or **End of track**, with a 10-second fade-out. Open it from the **⋯** menu on the Now Playing screen.
@@ -151,7 +151,7 @@ Client-side scraping gets rate-limited and `403`'d per device IP and breaks when
 changes. `yt-dlp` is the most robust extractor available, so it runs server-side: one stable IP,
 a shared cache, and a Range-seekable audio proxy.
 
-**Docker Hub:** [`marcinx98x/aurora-server`](https://hub.docker.com/r/marcinx98x/aurora-server) — recommended for Synology NAS, VPS, or any Docker host. No local Python or `Dockerfile` required on the server.
+**Docker Hub:** [`marcinx98x/aurora-server`](https://hub.docker.com/r/marcinx98x/aurora-server) — recommended for Synology NAS, VPS, or any Docker host. No local Python or `Dockerfile` required on the server. The image runs **uvicorn with 2 workers** so a cache-hit for the next track can proceed without waiting on the current stream.
 
 ```
 GET /health
@@ -217,7 +217,7 @@ cp .env.example .env
 # Edit .env to add optional registry settings and choose a cache limit.
 # AURORA_CACHE_MAX_BYTES=unlimited keeps cached songs permanently.
 python -m pip install -r requirements.txt
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --env-file .env
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2 --env-file .env
 ```
 
 Downloaded tracks are stored under `server/cache` and indexed by YouTube video ID in

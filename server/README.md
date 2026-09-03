@@ -54,7 +54,7 @@ services:
       - ./data:/app/data         # user sync DB
 ```
 
-Uvicorn listens on **8000 inside the container**. Map any host port you like (18000 is the default in this repo).
+Uvicorn listens on **8000 inside the container** with **2 workers** (so `/stream` for the current track does not block a cache-hit for the next). Map any host port you like (18000 is the default in this repo).
 
 ## Synology NAS
 

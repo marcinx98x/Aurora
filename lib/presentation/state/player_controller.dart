@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'package:audio_session/audio_session.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
@@ -114,6 +115,7 @@ class PlayerController extends Notifier<PlayerState> {
   double _baseVolume = 1.0;
   Timer? _sessionDebounce;
   bool _wasPlaying = false;
+  bool _advancing = false;
   bool _sessionRestorePending = false;
   Duration _restoredStartAt = Duration.zero;
 
@@ -302,14 +304,19 @@ class PlayerController extends Notifier<PlayerState> {
 
   Future<void> next() async {
     if (state.queue.isEmpty) return;
-    final last = state.index >= state.queue.length - 1;
-    if (last && state.repeat == LoopMode.off && state.queue.length > 1) {
-      // wrap so "next" always does something
-    } else if (last && state.queue.length == 1) {
-      return;
+    if (state.queue.length == 1) return;
+    int nextIndex;
+    if (state.shuffle) {
+      final rng = Random();
+      do {
+        nextIndex = rng.nextInt(state.queue.length);
+      } while (nextIndex == state.index);
+    } else {
+      final last = state.index >= state.queue.length - 1;
+      nextIndex = last ? 0 : state.index + 1;
     }
     state = state.copyWith(
-        index: last ? 0 : state.index + 1,
+        index: nextIndex,
         position: Duration.zero,
         duration: Duration.zero);
     await _loadCurrent(autoplay: true);
@@ -331,6 +338,7 @@ class PlayerController extends Notifier<PlayerState> {
       _player.seek(state.total * fraction.clamp(0.0, 1.0));
 
   void _onComplete() {
+    if (_advancing || state.isLoading) return;
     // "Stop after this track" wins over every continuation rule.
     if (state.sleepAtTrackEnd) {
       _sleepTimer?.cancel();
@@ -398,22 +406,32 @@ class PlayerController extends Notifier<PlayerState> {
       sources.add(item(track, uri));
     } else {
       if (idx > 0) {
-        final previous = q[idx - 1];
-        final previousUri = await _getTrackUri(previous);
-        if (token != _loadToken) {
-          throw ja.PlayerInterruptedException('superseded load');
+        try {
+          final previous = q[idx - 1];
+          final previousUri = await _getTrackUri(previous);
+          if (token != _loadToken) {
+            throw ja.PlayerInterruptedException('superseded load');
+          }
+          sources.add(item(previous, previousUri));
+          initialIndex = 1;
+        } on ja.PlayerInterruptedException {
+          rethrow;
+        } catch (_) {
+          // Adjacent track failed — current track still loads fine.
         }
-        sources.add(item(previous, previousUri));
-        initialIndex = 1;
       }
       sources.add(item(track, uri));
       if (idx < q.length - 1) {
-        final next = q[idx + 1];
-        final nextUri = await _getTrackUri(next);
-        if (token != _loadToken) {
-          throw ja.PlayerInterruptedException('superseded load');
-        }
-        sources.add(item(next, nextUri));
+        try {
+          final next = q[idx + 1];
+          final nextUri = await _getTrackUri(next);
+          if (token != _loadToken) {
+            throw ja.PlayerInterruptedException('superseded load');
+          }
+          sources.add(item(next, nextUri));
+        } on ja.PlayerInterruptedException {
+          rethrow;
+        } catch (_) {}
       }
     }
 
@@ -435,6 +453,7 @@ class PlayerController extends Notifier<PlayerState> {
     final track = state.current;
     if (track == null) return;
     final token = ++_loadToken;
+    _advancing = true;
     _cancelFade();
     state = state.copyWith(
       isLoading: true,
@@ -501,11 +520,11 @@ class PlayerController extends Notifier<PlayerState> {
     } catch (e, st) {
       debugPrint('[player] load failed: $e\n$st');
       if (token == _loadToken) {
-        // Keep the controller usable even when this particular local file or
-        // remote stream is invalid. The next selection starts cleanly.
         _recreatePlayer();
         state = state.copyWith(isLoading: false, error: 'Playback failed');
       }
+    } finally {
+      if (token == _loadToken) _advancing = false;
     }
   }
 

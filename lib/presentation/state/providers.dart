@@ -203,6 +203,26 @@ final autoDownloadFavoritesProvider =
     NotifierProvider<AutoDownloadFavoritesController, bool>(
         AutoDownloadFavoritesController.new);
 
+/// When on, new downloads start only on Wi-Fi (default off).
+class WifiOnlyDownloadsController extends Notifier<bool> {
+  static const _key = 'wifi_only_downloads';
+
+  @override
+  bool build() {
+    ref.watch(syncRevisionProvider);
+    return ref.watch(localStoreProvider).flag(_key);
+  }
+
+  Future<void> set(bool value) async {
+    await ref.read(localStoreProvider).setFlag(_key, value);
+    state = value;
+  }
+}
+
+final wifiOnlyDownloadsProvider =
+    NotifierProvider<WifiOnlyDownloadsController, bool>(
+        WifiOnlyDownloadsController.new);
+
 /// Fade the outgoing track out while the next one fades in.
 class CrossfadeController extends Notifier<bool> {
   static const _key = 'crossfade';

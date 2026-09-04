@@ -111,6 +111,16 @@ class SettingsScreen extends ConsumerWidget {
               }
             },
           ),
+          _Switch(
+            icon: Icons.wifi_rounded,
+            title: 'Download over Wi‑Fi only',
+            subtitle: ref.watch(wifiOnlyDownloadsProvider)
+                ? 'Downloads wait until you are on Wi‑Fi'
+                : 'Downloads may use mobile data',
+            value: ref.watch(wifiOnlyDownloadsProvider),
+            onChanged: (v) =>
+                ref.read(wifiOnlyDownloadsProvider.notifier).set(v),
+          ),
           _Tile(
             icon: Icons.insights_rounded,
             title: 'Listening stats',

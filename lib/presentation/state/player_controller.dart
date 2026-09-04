@@ -315,7 +315,7 @@ class PlayerController extends Notifier<PlayerState> {
       _midStreamReloadCount++;
       final startAt = state.position;
       unawaited(_loadCurrent(
-        autoplay: true,
+        autoplay: !_userPaused,
         startAt: startAt,
         recordRecent: false,
       ));
@@ -540,6 +540,7 @@ class PlayerController extends Notifier<PlayerState> {
       final last = state.index >= state.queue.length - 1;
       nextIndex = last ? 0 : state.index + 1;
     }
+    _userPaused = false;
     state = state.copyWith(
         index: nextIndex,
         position: Duration.zero,
@@ -556,6 +557,7 @@ class PlayerController extends Notifier<PlayerState> {
       await _player.seek(Duration.zero);
       return;
     }
+    _userPaused = false;
     state = state.copyWith(
         index: state.index - 1,
         position: Duration.zero,
@@ -767,7 +769,6 @@ class PlayerController extends Notifier<PlayerState> {
     if (track == null) return;
     final token = ++_loadToken;
     _advancing = true;
-    _userPaused = false;
     _stuckSince = null;
     _cancelFade();
     state = state.copyWith(
@@ -896,20 +897,35 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   Future<bool> _startPlayback(int token) async {
-    _userPaused = false;
+    // Do not clear _userPaused — pause during load must win over autoplay.
     _cancelFade();
     await _player.setVolume(_baseVolume);
     if (token != _loadToken) return false;
+    if (_userPaused) return true;
     final ready = await _waitUntilPlayable(token);
     if (!ready || token != _loadToken) return false;
+    if (_userPaused) return true;
     await _player.play();
     if (token != _loadToken) return false;
+    if (_userPaused) {
+      await _player.pause();
+      return true;
+    }
     if (!_player.playing) {
       await Future<void>.delayed(const Duration(milliseconds: 200));
       if (token != _loadToken) return false;
+      if (_userPaused) return true;
       await _player.play();
+      if (_userPaused) {
+        await _player.pause();
+        return true;
+      }
     }
     if (token != _loadToken) return false;
+    if (_userPaused) {
+      await _player.pause();
+      return true;
+    }
     if (!_player.playing) return false;
     _fadeIn();
     return true;

@@ -116,6 +116,7 @@ class PlayerController extends Notifier<PlayerState> {
   Timer? _sessionDebounce;
   bool _wasPlaying = false;
   bool _advancing = false;
+  bool _userPaused = false;
   bool _sessionRestorePending = false;
   Duration _restoredStartAt = Duration.zero;
   String? _advanceFromId;
@@ -278,6 +279,7 @@ class PlayerController extends Notifier<PlayerState> {
       }
       if (wasPlaying &&
           !ps.playing &&
+          !_userPaused &&
           ps.processingState == ja.ProcessingState.idle &&
           _isNearEnd()) {
         _advanceToNext(fromTrackId: id, reason: 'idle-end');
@@ -467,6 +469,7 @@ class PlayerController extends Notifier<PlayerState> {
     if (tracks.isEmpty) return;
     _sessionRestorePending = false;
     _restoredStartAt = Duration.zero;
+    _userPaused = false;
     state = state.copyWith(
       queue: tracks,
       index: startAt.clamp(0, tracks.length - 1),
@@ -480,7 +483,7 @@ class PlayerController extends Notifier<PlayerState> {
 
   Future<void> toggle() async {
     if (_player.playing) {
-      await _player.pause();
+      await _pauseInternal();
     } else if (_player.processingState == ja.ProcessingState.idle &&
         state.hasTrack) {
       // Cold start, stream failure, or lazy session restore — load (or reload)
@@ -490,21 +493,32 @@ class PlayerController extends Notifier<PlayerState> {
           _sessionRestorePending ? _restoredStartAt : state.position;
       _sessionRestorePending = false;
       _restoredStartAt = Duration.zero;
+      _userPaused = false;
       await _loadCurrent(
         autoplay: true,
         startAt: startAt,
         recordRecent: recordRecent,
       );
     } else {
+      _userPaused = false;
+      _cancelFade();
+      await _player.setVolume(_baseVolume);
       await _player.play();
     }
   }
 
   Future<void> pause() async {
     if (_player.playing) {
-      await _player.pause();
+      await _pauseInternal();
       await persistSessionNow();
     }
+  }
+
+  Future<void> _pauseInternal() async {
+    _userPaused = true;
+    _cancelFade();
+    await _player.setVolume(_baseVolume);
+    await _player.pause();
   }
 
   Future<void> next() async {
@@ -749,6 +763,7 @@ class PlayerController extends Notifier<PlayerState> {
     if (track == null) return;
     final token = ++_loadToken;
     _advancing = true;
+    _userPaused = false;
     _stuckSince = null;
     _cancelFade();
     state = state.copyWith(
@@ -877,6 +892,7 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   Future<bool> _startPlayback(int token) async {
+    _userPaused = false;
     _cancelFade();
     await _player.setVolume(_baseVolume);
     if (token != _loadToken) return false;

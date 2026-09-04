@@ -176,24 +176,28 @@ class PlayerController extends Notifier<PlayerState> {
     _wireStreams(_player, ++_playerGeneration);
   }
 
-  /// Replace a native player that stopped accepting sources. The replacement
-  /// is assigned synchronously, so another tap can immediately use it while
-  /// the broken instance is being disposed in the background.
-  void _recreatePlayer() {
+  /// Replace a native player that stopped accepting sources.
+  /// Must dispose the old instance first — just_audio_background allows only
+  /// one player id at a time.
+  Future<void> _recreatePlayer() async {
     _concat = null;
     _windowQueueIndices = [];
     final broken = _player;
+    try {
+      await broken.dispose();
+    } catch (e) {
+      debugPrint('[player] dispose before recreate failed: $e');
+    }
     _createPlayer();
-    unawaited(broken.dispose());
-    unawaited(_player.setVolume(_baseVolume));
-    unawaited(_player.setSpeed(state.speed));
+    await _player.setVolume(_baseVolume);
+    await _player.setSpeed(state.speed);
   }
 
   Future<void> _wireAudioSession() async {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
     session.becomingNoisyEventStream.listen((_) {
-      if (_player.playing) _player.pause();
+      if (_player.playing) unawaited(_pauseInternal());
     });
   }
 
@@ -840,7 +844,7 @@ class PlayerController extends Notifier<PlayerState> {
           // setAudioSource failures can leave ExoPlayer unable to accept the
           // next source. Retry on a fresh native instance instead of forcing
           // the user to restart the whole app.
-          _recreatePlayer();
+          await _recreatePlayer();
           state = state.copyWith(isLoading: true);
           await Future<void>.delayed(
               Duration(milliseconds: 500 * (attempt + 1)));
@@ -857,7 +861,7 @@ class PlayerController extends Notifier<PlayerState> {
     } catch (e, st) {
       debugPrint('[player] load failed: $e\n$st');
       if (token == _loadToken) {
-        _recreatePlayer();
+        await _recreatePlayer();
         failed = true;
       }
     } finally {

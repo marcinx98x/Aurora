@@ -112,7 +112,7 @@ class MiniPlayer extends ConsumerWidget {
                             SizedBox(
                               width: 34,
                               height: 34,
-                              child: state.isLoading
+                              child: state.isLoading && !state.isPlaying
                                   ? const Padding(
                                       padding: EdgeInsets.all(7),
                                       child: CircularProgressIndicator(

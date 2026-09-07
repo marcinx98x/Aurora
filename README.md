@@ -52,7 +52,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 ### <img src="docs/icons/play.svg" width="18" align="top"> Playback
 - Audio streams through the proxy as `audio/mp4` over HTTP **Range** — seeking is instant.
 - **Dual source**: remote YouTube and local device files run through the same `just_audio` engine.
-- Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**. Continuous playthrough: when a track ends, the next one **loads and starts automatically** (app open or minimized — no extra Play tap). Order is sequential, or random when shuffle is on — failed loads stay on the current track (retry / Play), they never auto-skip ahead. Before ExoPlayer starts a remote song the app **waits for the resolver cache** (`Range` probe), then retries the same track until playback actually starts. Stream probes are **serialized** and an in-flight warm is **cancelled or reused** on advance (so cold yt-dlp downloads are not raced). End-of-track stuck detection only fires at the true end (not during crossfade). Remote songs use a **single `AudioSource.uri`**. The next remote track is **warmed** only after the current one is playing.
+- Queue with **shuffle**, **repeat one/all** and **drag-to-reorder**. Continuous playthrough: when a track ends, the next one **loads and starts automatically** — including with the screen locked or the app in the background (the media foreground service stays up between tracks so Dart can finish resolve / warm / play). Order is sequential, or random when shuffle is on — failed loads stay on the current track (retry / Play), they never auto-skip ahead. **Pause stays paused**: user pause wins over autoplay retries and mid-load start. Returning to the app after a stuck advance finishes `next()` or `play()` if you had not paused. Before ExoPlayer starts a remote song the app **waits for the resolver cache** (`Range` probe). Stream probes are **serialized** and an in-flight warm is **cancelled or reused** on advance. End-of-track stuck detection only fires at the true end (not during crossfade). Remote songs use a **single `AudioSource.uri`**. The next remote track is **warmed** after the current one is playing.
 - **Crossfade**, 2–12 s, adjustable.
 - **Remember playback position** (Settings → Audio, on by default) — after closing the app, the **mini-player** reappears immediately with the last track, artwork, and progress bar. Audio loads only when you press Play and resumes from the saved scrub position. Session data stays on-device (not synced to the server).
 - **Sleep timer**: 5–60 min presets or **End of track**, with a 10-second fade-out. Open it from the **⋯** menu on the Now Playing screen.
@@ -72,7 +72,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 - Tabs: **Playlists · On device · Downloaded · Queue**.
 - **Import from a link** — paste a YouTube playlist / album / mix URL, get a local playlist.
 - **Liked Songs** with an optional **auto-download** switch that also backfills earlier likes.
-- **Downloads**: MP3 + lyrics, pause / resume / cancel, offline playback, set as **ringtone** or **alarm**.
+- **Downloads**: MP3 + lyrics, pause / resume / cancel, offline playback, set as **ringtone** or **alarm**. Optional **Download over Wi‑Fi only** (Settings → Library, off by default) — blocks new/resume transfers on mobile data and pauses active ones when Wi‑Fi drops.
 - **On-device music** via MediaStore, grouped by folder, with per-folder show/hide.
 - **Listening stats**: hours listened, play counts, top artists, most played.
 

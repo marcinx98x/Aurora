@@ -619,15 +619,27 @@ class PlayerController extends Notifier<PlayerState> {
     if (state.queue.length <= 1) return;
     _advanceFromId = fromTrackId;
     debugPrint('[player] advance from=$fromTrackId reason=$reason');
-    if (reason == 'completed') {
-      unawaited(() async {
-        await Future<void>.delayed(const Duration(milliseconds: 200));
-        if (_advanceFromId != fromTrackId) return;
-        if (state.current?.id != fromTrackId) return;
-        await next();
-      }());
-    } else {
-      unawaited(next());
+    unawaited(next());
+  }
+
+  /// After returning from background / lock screen: finish a stuck advance or
+  /// resume play when the next source loaded but autoplay did not stick.
+  Future<void> onAppResumed() async {
+    if (_userPaused || !state.hasTrack) return;
+    if (_sessionRestorePending || state.isLoading || _advancing) return;
+    final ps = _player.processingState;
+    if (ps == ja.ProcessingState.completed ||
+        (ps == ja.ProcessingState.idle && _isNearEnd())) {
+      if (state.queue.length <= 1) return;
+      await next();
+      return;
+    }
+    if (!_player.playing &&
+        ps != ja.ProcessingState.idle &&
+        ps != ja.ProcessingState.loading) {
+      _cancelFade();
+      await _player.setVolume(_baseVolume);
+      await _player.play();
     }
   }
 
@@ -831,8 +843,10 @@ class PlayerController extends Notifier<PlayerState> {
           state = state.copyWith(isLoading: false);
           if (autoplay) {
             final started = await _startPlayback(token);
-            if (!started) {
-              throw StateError('playback did not start');
+            // Source is ready — do not recreate just because play() failed
+            // (common while backgrounded). Resume / tap play can finish it.
+            if (!started && !_userPaused) {
+              debugPrint('[player] autoplay deferred after source ready');
             }
           } else {
             await _player.setVolume(_baseVolume);

@@ -31,7 +31,9 @@ Future<void> main() async {
     androidNotificationChannelId: 'com.aurora.music.channel.audio',
     androidNotificationChannelName: 'Aurora playback',
     androidNotificationOngoing: true,
-    androidStopForegroundOnPause: true,
+    // Keep FGS between tracks — remote streams reload in Dart after EOS;
+    // stopping foreground freezes that work until the user opens the app.
+    androidStopForegroundOnPause: false,
   );
 
   final store = LocalStore();
@@ -84,6 +86,10 @@ class _AuroraAppState extends ConsumerState<AuroraApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(ref.read(playerControllerProvider.notifier).onAppResumed());
+      return;
+    }
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {

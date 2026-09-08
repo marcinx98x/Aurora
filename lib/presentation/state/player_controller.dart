@@ -114,6 +114,7 @@ class PlayerController extends Notifier<PlayerState> {
   DateTime? _sleepEnd;
   double _baseVolume = 1.0;
   Timer? _sessionDebounce;
+  Timer? _positionPoll;
   bool _wasPlaying = false;
   bool _advancing = false;
   bool _userPaused = false;
@@ -136,6 +137,7 @@ class PlayerController extends Notifier<PlayerState> {
       _sleepTimer?.cancel();
       _fadeTimer?.cancel();
       _sessionDebounce?.cancel();
+      _stopPositionPoll();
       _cancelWarm();
       _player.dispose();
     });
@@ -180,6 +182,7 @@ class PlayerController extends Notifier<PlayerState> {
   /// Must dispose the old instance first — just_audio_background allows only
   /// one player id at a time.
   Future<void> _recreatePlayer() async {
+    _stopPositionPoll();
     _concat = null;
     _windowQueueIndices = [];
     final broken = _player;
@@ -210,58 +213,87 @@ class PlayerController extends Notifier<PlayerState> {
   String? _lastTickId;
   int _pendingSeconds = 0;
 
+  void _stopPositionPoll() {
+    _positionPoll?.cancel();
+    _positionPoll = null;
+  }
+
+  void _syncPositionPoll(bool playing) {
+    if (!playing || _sessionRestorePending) {
+      _stopPositionPoll();
+      return;
+    }
+    if (_positionPoll != null) return;
+    // Poll like Android media notification interpolation — just_audio's
+    // positionStream often stalls after setAudioSource / missing duration.
+    _positionPoll = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      if (!_player.playing || _sessionRestorePending) {
+        _stopPositionPoll();
+        return;
+      }
+      _onPositionTick(_player.position, fromPoll: true);
+    });
+  }
+
+  void _onPositionTick(Duration p, {required bool fromPoll}) {
+    final grew = p > _lastTick + const Duration(milliseconds: 80);
+    if (fromPoll && !_sessionRestorePending) {
+      final d = _player.duration;
+      state = state.copyWith(
+        position: p,
+        duration: d ?? state.duration,
+      );
+    }
+    if (!_sessionRestorePending && !state.isLoading) {
+      if (_fadingOut) {
+        _stuckSince = null;
+      } else if (state.isPlaying && state.total > Duration.zero) {
+        final progress = state.total.inMilliseconds == 0
+            ? 0.0
+            : (p.inMilliseconds / state.total.inMilliseconds).clamp(0.0, 1.0);
+        final left = state.total - p;
+        if (progress >= 0.995 && !grew && left <= const Duration(seconds: 1)) {
+          _stuckSince ??= DateTime.now();
+          if (DateTime.now().difference(_stuckSince!) >=
+              const Duration(seconds: 3)) {
+            final id = state.current?.id;
+            if (id != null) {
+              _advanceToNext(fromTrackId: id, reason: 'stuck');
+            }
+          }
+        } else {
+          _stuckSince = null;
+        }
+      } else {
+        _stuckSince = null;
+      }
+    }
+    _maybeFadeOut();
+    final id = state.current?.id;
+    if (id != null && id == _lastTickId) {
+      final delta = p - _lastTick;
+      if (delta > Duration.zero && delta < const Duration(seconds: 2)) {
+        _pendingSeconds += delta.inMilliseconds;
+        if (_pendingSeconds >= 15000) {
+          ref
+              .read(localStoreProvider)
+              .addListenTime(id, _pendingSeconds ~/ 1000);
+          _pendingSeconds = 0;
+        }
+      }
+    }
+    _lastTickId = id;
+    _lastTick = p;
+    if (!_sessionRestorePending) _schedulePersistSession();
+  }
+
   void _wireStreams(ja.AudioPlayer player, int generation) {
     bool isCurrentPlayer() => generation == _playerGeneration;
 
+    // Side-effects only — UI position comes from _positionPoll.
     player.positionStream.listen((p) {
       if (!isCurrentPlayer()) return;
-      if (!_sessionRestorePending) {
-        final grew = p > _lastTick + const Duration(milliseconds: 80);
-        // Always advance the scrubber while audio runs — gating on isLoading
-        // froze the bar for the whole ensure/play window (or forever on a
-        // superseded load that never cleared the flag).
-        state = state.copyWith(position: p);
-        if (!state.isLoading) {
-          if (_fadingOut) {
-            _stuckSince = null;
-          } else if (state.isPlaying &&
-              state.progress >= 0.995 &&
-              state.total > Duration.zero) {
-            final left = state.total - state.position;
-            if (!grew && left <= const Duration(seconds: 1)) {
-              _stuckSince ??= DateTime.now();
-              if (DateTime.now().difference(_stuckSince!) >=
-                  const Duration(seconds: 3)) {
-                final id = state.current?.id;
-                if (id != null) {
-                  _advanceToNext(fromTrackId: id, reason: 'stuck');
-                }
-              }
-            } else {
-              _stuckSince = null;
-            }
-          } else {
-            _stuckSince = null;
-          }
-        }
-      }
-      _maybeFadeOut();
-      final id = state.current?.id;
-      if (id != null && id == _lastTickId) {
-        final delta = p - _lastTick;
-        if (delta > Duration.zero && delta < const Duration(seconds: 2)) {
-          _pendingSeconds += delta.inMilliseconds;
-          if (_pendingSeconds >= 15000) {
-            ref
-                .read(localStoreProvider)
-                .addListenTime(id, _pendingSeconds ~/ 1000);
-            _pendingSeconds = 0;
-          }
-        }
-      }
-      _lastTickId = id;
-      _lastTick = p;
-      if (!_sessionRestorePending) _schedulePersistSession();
+      _onPositionTick(p, fromPoll: false);
     });
     player.durationStream.listen((d) {
       if (!isCurrentPlayer()) return;
@@ -271,6 +303,7 @@ class PlayerController extends Notifier<PlayerState> {
       if (!isCurrentPlayer()) return;
       final wasPlaying = _wasPlaying;
       state = state.copyWith(isPlaying: ps.playing);
+      _syncPositionPoll(ps.playing);
       if (wasPlaying && !ps.playing) {
         unawaited(persistSessionNow());
       }

@@ -4,6 +4,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../domain/entities/track.dart';
 import '../../state/player_controller.dart';
+import '../../state/playlist_controller.dart';
 import '../../state/providers.dart';
 import '../../widgets/artwork.dart';
 import '../../widgets/track_tile.dart';
@@ -106,7 +107,29 @@ class PlaylistBrowseScreen extends ConsumerWidget {
                             ?.copyWith(color: AppColors.textSecondary),
                       ),
                       const Spacer(),
-                      if (tracks.isNotEmpty)
+                      if (tracks.isNotEmpty) ...[
+                        IconButton(
+                          tooltip: 'Save playlist',
+                          icon: const Icon(
+                            Icons.add_circle_outline_rounded,
+                            color: AppColors.textSecondary,
+                          ),
+                          onPressed: () async {
+                            await ref
+                                .read(playlistsProvider.notifier)
+                                .createWith(title, tracks);
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                behavior: SnackBarBehavior.floating,
+                                backgroundColor: AppColors.elevated,
+                                content: Text(
+                                  'Saved “$title” · ${tracks.length} tracks',
+                                ),
+                              ),
+                            );
+                          },
+                        ),
                         FilledButton.icon(
                           onPressed: () => ref
                               .read(playerControllerProvider.notifier)
@@ -114,6 +137,7 @@ class PlaylistBrowseScreen extends ConsumerWidget {
                           icon: const Icon(Icons.play_arrow_rounded),
                           label: const Text('Play all'),
                         ),
+                      ],
                     ],
                   ),
                 ),

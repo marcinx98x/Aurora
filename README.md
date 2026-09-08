@@ -63,9 +63,9 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 - **Swipe down to dismiss** — drag the screen down to return to the mini-player without pausing playback (same as collapsing the player).
 - **Minimal top bar** — centred title with a plain **⋯** menu (no chevron or separate sleep-timer icon). Sleep timer lives in that menu, above track actions.
 - **Two-role dynamic colour** — a vivid *accent* for marks, a deep same-hue *backdrop* for the wash, each held to its WCAG ratio. See [Colour](#colour).
-- **Waveform seeker** — custom-painted bars with an elastic bump near the finger and a haptic tick per bar.
+- **Waveform seeker** — custom-painted bars with an elastic bump near the finger and a haptic tick per bar. In-app progress (mini-player and Now Playing) is polled while audio plays so the bar stays in sync even when `just_audio`'s position stream stalls; the Android media notification continues to interpolate independently.
 - **Album-art pulse**: orbiting particles and a breathing ring that speeds up while playing.
-- **Synced lyrics** (lrclib) that open at and follow the active line; tap a line to seek.
+- **Synced lyrics** (lrclib) that open at and follow the active line; tap a line to seek. While the lyrics sheet is open the **screen stays on** (wake lock); closing the sheet releases it.
 - **Shareable lyric card** — hold a line, pick 1–6 lines, share as a rendered PNG.
 
 ### <img src="docs/icons/library.svg" width="18" align="top"> Library

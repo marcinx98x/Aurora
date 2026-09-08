@@ -5,7 +5,6 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../state/auth_controller.dart';
 import '../../state/connectivity_controller.dart';
-import '../../state/favorites_controller.dart';
 import '../../state/providers.dart';
 import '../../widgets/aurora_refresh.dart';
 import '../../widgets/glass.dart';
@@ -48,10 +47,28 @@ class HomeScreen extends ConsumerWidget {
             expandedHeight: 156,
             backgroundColor: AppColors.voidBlack,
             surfaceTintColor: Colors.transparent,
-            title: Text('Aurora',
-                style: text.titleLarge?.copyWith(
-                    color: AppColors.accentBright,
-                    fontWeight: FontWeight.w800)),
+            leadingWidth: 64,
+            leading: Padding(
+              padding: const EdgeInsets.only(left: Sp.lg),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: GestureDetector(
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const SettingsScreen())),
+                  child: _ProfileAvatar(user: user),
+                ),
+              ),
+            ),
+            title: Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.only(right: Sp.sm),
+                child: Text('Aurora',
+                    style: text.titleLarge?.copyWith(
+                        color: AppColors.accentBright,
+                        fontWeight: FontWeight.w800)),
+              ),
+            ),
             flexibleSpace: FlexibleSpaceBar(
               collapseMode: CollapseMode.parallax,
               background: SafeArea(
@@ -93,24 +110,6 @@ class HomeScreen extends ConsumerWidget {
                 ),
               ),
             ),
-            actions: [
-              IconButton(
-                onPressed: () => ref.read(navIndexProvider.notifier).state = 1,
-                icon: const Icon(Icons.search_rounded),
-              ),
-              IconButton(
-                onPressed: () => _showNotifications(context, ref),
-                icon: const Icon(Icons.notifications_none_rounded),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(right: Sp.lg, left: Sp.xs),
-                child: GestureDetector(
-                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => const SettingsScreen())),
-                  child: _ProfileAvatar(user: user),
-                ),
-              ),
-            ],
           ),
           if (!online) const SliverToBoxAdapter(child: _OfflineSanctuary()),
           const SliverToBoxAdapter(child: SizedBox(height: Sp.sm)),
@@ -266,79 +265,6 @@ String _todayLabel() {
     'Dec'
   ];
   return '${days[n.weekday - 1]}, ${mons[n.month - 1]} ${n.day}';
-}
-
-void _showNotifications(BuildContext context, WidgetRef ref) {
-  final text = Theme.of(context).textTheme;
-  // Build from real state, not random placeholders.
-  final recents = ref.read(recentlyPlayedProvider).valueOrNull ?? const [];
-  final likedCount = ref.read(favoritesProvider).length;
-  final items = <(IconData, String, String)>[
-    if (recents.isNotEmpty)
-      (
-        Icons.history_rounded,
-        'Continue listening',
-        'Pick up “${recents.first.title}”'
-      ),
-    if (likedCount > 0)
-      (
-        Icons.favorite_rounded,
-        'Liked Songs',
-        'You have $likedCount liked ${likedCount == 1 ? 'song' : 'songs'}'
-      ),
-    (
-      Icons.local_fire_department_rounded,
-      'Top Charts',
-      'See what’s trending today'
-    ),
-    (
-      Icons.bedtime_rounded,
-      'Daily reminders on',
-      'Mix at 12:30 · wind-down at 20:00'
-    ),
-  ];
-  showModalBottomSheet(
-    context: context,
-    backgroundColor: Colors.transparent,
-    builder: (_) => Glass(
-      radius: const BorderRadius.vertical(top: Radii.xl),
-      blur: 30,
-      opacity: 0.16,
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: Sp.md),
-            Container(
-                width: 44,
-                height: 4,
-                decoration: const BoxDecoration(
-                    color: AppColors.glassStroke, borderRadius: Radii.rPill)),
-            Padding(
-              padding: const EdgeInsets.all(Sp.lg),
-              child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Notifications', style: text.titleLarge)),
-            ),
-            for (final (icon, title, body) in items)
-              ListTile(
-                leading: Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                      borderRadius: Radii.rSm, gradient: AppColors.accentSweep),
-                  child: Icon(icon, color: Colors.black, size: 20),
-                ),
-                title: Text(title, style: text.titleMedium),
-                subtitle: Text(body, style: text.bodyMedium),
-              ),
-            const SizedBox(height: Sp.md),
-          ],
-        ),
-      ),
-    ),
-  );
 }
 
 /// Breathing offline indicator near the header.

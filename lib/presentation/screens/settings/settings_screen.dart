@@ -144,12 +144,51 @@ class SettingsScreen extends ConsumerWidget {
             onTap: () => _openExternalLink(context, AppConfig.repositoryUrl),
           ),
           const SizedBox(height: Sp.xl),
+          Text('Notifications', style: text.labelLarge),
+          const SizedBox(height: Sp.sm),
+          ..._notificationItems(ref).map(
+            (item) => _InfoTile(
+              icon: item.$1,
+              title: item.$2,
+              subtitle: item.$3,
+            ),
+          ),
+          const SizedBox(height: Sp.xl),
           Center(
             child: Text('Aurora Music · v1.0', style: text.labelSmall),
           ),
         ],
       ),
     );
+  }
+
+  List<(IconData, String, String)> _notificationItems(WidgetRef ref) {
+    final recents = ref.watch(recentlyPlayedProvider).valueOrNull ?? const [];
+    final likedCount = ref.watch(favoritesProvider).length;
+    return [
+      if (recents.isNotEmpty)
+        (
+          Icons.history_rounded,
+          'Continue listening',
+          'Pick up “${recents.first.title}”'
+        ),
+      if (likedCount > 0)
+        (
+          Icons.favorite_rounded,
+          'Liked Songs',
+          'You have $likedCount liked ${likedCount == 1 ? 'song' : 'songs'}'
+        ),
+      (
+        Icons.local_fire_department_rounded,
+        'Top Charts',
+        'See what’s trending today'
+      ),
+      (
+        Icons.bedtime_rounded,
+        'Daily reminders on',
+        'Mix at 12:30 · wind-down at 20:00'
+      ),
+    ];
   }
 
   Future<void> _openExternalLink(BuildContext context, String url) async {
@@ -223,6 +262,32 @@ class _Tile extends StatelessWidget {
       subtitle: Text(subtitle, style: text.bodyMedium),
       trailing: const Icon(Icons.chevron_right_rounded),
       onTap: onTap,
+    );
+  }
+}
+
+/// Same visual language as [_Tile], without navigation (status / reminder rows).
+class _InfoTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  const _InfoTile(
+      {required this.icon, required this.title, required this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+            borderRadius: Radii.rSm, gradient: AppColors.accentSweep),
+        child: Icon(icon, color: Colors.black),
+      ),
+      title: Text(title, style: text.titleMedium),
+      subtitle: Text(subtitle, style: text.bodyMedium),
     );
   }
 }

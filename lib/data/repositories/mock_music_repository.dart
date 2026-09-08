@@ -16,7 +16,23 @@ class MockMusicRepository implements MusicRepository {
             t.title.toLowerCase().contains(q) ||
             t.artist.toLowerCase().contains(q))
         .toList();
-    return _delayed(q.isEmpty ? MockTracks.all : hits, 400);
+    final base = q.isEmpty ? MockTracks.all : hits;
+    if (filter == 'tracks') return _delayed(base, 400);
+    // Fake a couple of collection hits for UI preview.
+    return _delayed(
+      base
+          .take(3)
+          .map((t) => t.copyWith(
+                kind: switch (filter) {
+                  'albums' => TrackKind.album,
+                  'podcasts' => TrackKind.podcast,
+                  _ => TrackKind.playlist,
+                },
+                browseUrl: 'https://www.youtube.com/playlist?list=${t.id}',
+              ))
+          .toList(),
+      400,
+    );
   }
 
   @override

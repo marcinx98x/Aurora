@@ -146,10 +146,14 @@ final libraryTabProvider = StateProvider<int>((ref) => 0);
 // --- Search (debounced in the UI) ---------------------------------------
 final searchQueryProvider = StateProvider<String>((ref) => '');
 
+/// Active search chip: tracks | playlists | albums | podcasts.
+final searchFilterProvider = StateProvider<String>((ref) => 'tracks');
+
 final searchResultsProvider = FutureProvider<List<Track>>((ref) async {
   final q = ref.watch(searchQueryProvider);
+  final filter = ref.watch(searchFilterProvider);
   if (q.trim().isEmpty) return const [];
-  return ref.watch(musicRepositoryProvider).search(q);
+  return ref.watch(musicRepositoryProvider).search(q, filter: filter);
 });
 
 /// Autocomplete for the current query. Separate from [searchResultsProvider]

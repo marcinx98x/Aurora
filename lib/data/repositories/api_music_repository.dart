@@ -24,37 +24,53 @@ class ApiMusicRepository implements MusicRepository {
 
   Track _fromJson(Map<String, dynamic> j) {
     final id = j['id'] as String;
+    final kind = Track.kindFrom(j['kind']);
+    final browse = (j['url'] as String?)?.isNotEmpty == true
+        ? j['url'] as String
+        : (j['browseUrl'] as String?);
+    final thumb = (j['thumbnail'] as String?) ?? '';
     return Track(
       id: id,
       title: (j['title'] as String?) ?? 'Unknown',
       artist: (j['artist'] as String?) ?? 'Unknown',
-      artworkUrl: (j['thumbnail'] as String?) ??
-          'https://i.ytimg.com/vi/$id/hqdefault.jpg',
+      artworkUrl: thumb.isNotEmpty
+          ? thumb
+          : (kind == TrackKind.track
+              ? 'https://i.ytimg.com/vi/$id/hqdefault.jpg'
+              : ''),
       duration: Duration(seconds: (j['duration'] as num?)?.toInt() ?? 0),
       plays: (j['views'] as num?)?.toInt() ?? 0,
       accent: Track.accentFor(id),
       channelUrl: (j['channelUrl'] as String?)?.isNotEmpty == true
           ? j['channelUrl'] as String
           : null,
+      kind: kind,
+      browseUrl: browse,
     );
   }
 
-  Future<List<Track>> _search(String query, int limit) async {
-    final res = await _dio.get('/search',
-        queryParameters: {'q': query, 'limit': limit});
+  Future<List<Track>> _search(String query, int limit,
+      {String filter = 'tracks'}) async {
+    final res = await _dio.get('/search', queryParameters: {
+      'q': query,
+      'limit': limit,
+      'filter': filter,
+    });
     final list = (res.data as List).cast<Map<String, dynamic>>();
     return list.map(_fromJson).toList(growable: false);
   }
 
   @override
   Future<List<Track>> search(String query, {String filter = 'tracks'}) {
-    final q = filter == 'videos' ? query : '$query music';
-    return _search(q, 25);
+    // Tracks: bias toward music. Collections: pass query through unchanged
+    // (server appends album/podcast when needed).
+    final q = filter == 'tracks' ? '$query music' : query;
+    return _search(q, 25, filter: filter);
   }
 
   @override
   Future<List<Track>> searchTracks(String query, {int limit = 25}) =>
-      _search(query, limit);
+      _search(query, limit, filter: 'tracks');
 
   @override
   Future<List<Track>> trending({bool refresh = false}) async {

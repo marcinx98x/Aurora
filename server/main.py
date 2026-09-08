@@ -8,7 +8,8 @@ range-proxy so the app never talks to googlevideo directly (no 403).
 
 Endpoints:
   GET /health
-  GET /search?q=...&limit=20      -> [{id,title,artist,duration,thumbnail,views}]
+  GET /search?q=...&limit=20&filter=tracks|playlists|albums|podcasts
+                             -> [{id,title,artist,duration,thumbnail,views,kind,url}]
   GET /stream?v=VIDEO_ID          -> audio bytes (HTTP Range supported)
 
 Run:  uvicorn main:app --host 0.0.0.0 --port 8000
@@ -27,7 +28,7 @@ import time
 import unicodedata
 from contextlib import contextmanager
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote_plus, urlsplit
 
 import httpx
 import yt_dlp
@@ -678,28 +679,38 @@ def delete_sync_item(
     return {"ok": True}
 
 
-def _entry(e: dict[str, Any]) -> dict[str, Any]:
+def _entry(e: dict[str, Any], *, kind: str = "track") -> dict[str, Any]:
     """One flat yt-dlp entry -> the track shape the app expects."""
     # extract_flat omits duration/views for some entries — keep them anyway.
+    eid = e.get("id") or ""
     thumbs = e.get("thumbnails") or []
     thumb = thumbs[-1]["url"] if thumbs else (
-        f"https://i.ytimg.com/vi/{e['id']}/hqdefault.jpg"
+        f"https://i.ytimg.com/vi/{eid}/hqdefault.jpg"
+        if kind == "track"
+        else ""
     )
+    url = e.get("url") or e.get("webpage_url") or ""
+    if kind != "track" and not url and eid:
+        url = f"https://www.youtube.com/playlist?list={eid}"
+    if kind == "track" and not url and eid:
+        url = f"https://www.youtube.com/watch?v={eid}"
     return {
-        "id": e["id"],
+        "id": eid,
         "title": e.get("title") or "Unknown",
         "artist": e.get("uploader") or e.get("channel")
         or e.get("uploader_id") or "Unknown",
         "duration": int(e.get("duration") or 0),
         "thumbnail": thumb,
-        "views": int(e.get("view_count") or 0),
+        "views": int(e.get("view_count") or e.get("playlist_count") or 0),
         "channelUrl": e.get("channel_url") or e.get("uploader_url"),
+        "kind": kind,
+        "url": url,
     }
 
 
-def _entries(info: dict[str, Any]) -> list[dict[str, Any]]:
+def _entries(info: dict[str, Any], *, kind: str = "track") -> list[dict[str, Any]]:
     return [
-        _entry(e)
+        _entry(e, kind=kind)
         for e in (info.get("entries") or [])
         if e and e.get("id")
     ]
@@ -713,15 +724,57 @@ def _flat_opts() -> dict[str, Any]:
     return opts
 
 
+# YouTube /results type=playlist filter (base64 protobuf sp=).
+_YT_SP_PLAYLIST = "EgIQAw%3D%3D"
+
+
 @app.get("/search")
-def search(q: str, limit: int = 20) -> list[dict[str, Any]]:
-    query = q if q.startswith("ytsearch") else f"ytsearch{limit}:{q}"
+def search(
+    q: str,
+    limit: int = 20,
+    filter: str = "tracks",
+) -> list[dict[str, Any]]:
+    """Search YouTube. filter: tracks | playlists | albums | podcasts."""
+    kind_map = {
+        "tracks": "track",
+        "playlists": "playlist",
+        "albums": "album",
+        "podcasts": "podcast",
+    }
+    f = (filter or "tracks").lower().strip()
+    if f not in kind_map:
+        raise HTTPException(400, f"unknown filter: {filter}")
+    kind = kind_map[f]
+
+    query = (q or "").strip()
+    if not query:
+        return []
+
     try:
-        with _ydl(_flat_opts()) as ydl:
-            info = ydl.extract_info(query, download=False)
+        if f == "tracks":
+            ytdl_q = (
+                query if query.startswith("ytsearch")
+                else f"ytsearch{limit}:{query}"
+            )
+            with _ydl(_flat_opts()) as ydl:
+                info = ydl.extract_info(ytdl_q, download=False)
+        else:
+            search_q = query
+            if f == "albums" and "album" not in query.lower():
+                search_q = f"{query} album"
+            elif f == "podcasts" and "podcast" not in query.lower():
+                search_q = f"{query} podcast"
+            url = (
+                "https://www.youtube.com/results?"
+                f"search_query={quote_plus(search_q)}&sp={_YT_SP_PLAYLIST}"
+            )
+            with _ydl(_flat_opts()) as ydl:
+                info = ydl.extract_info(url, download=False)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"search failed: {e}") from e
-    return _entries(info)
+
+    rows = _entries(info or {}, kind=kind)
+    return rows[: max(1, min(limit, 50))]
 
 
 @app.get("/playlist")

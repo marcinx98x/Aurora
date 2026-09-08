@@ -442,60 +442,201 @@ class _OutputChip extends ConsumerWidget {
 class _SongInfo extends StatelessWidget {
   final Track track;
   const _SongInfo({required this.track});
+
+  static const _titleStyle = TextStyle(
+    fontSize: 30,
+    fontWeight: FontWeight.w600,
+    height: 1.12,
+    letterSpacing: -0.4,
+    color: AppColors.textPrimary,
+  );
+
   @override
   Widget build(BuildContext context) {
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                track.title,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.w600,
-                  height: 1.12,
-                  letterSpacing: -0.4,
-                  color: AppColors.textPrimary,
-                ),
+        Row(
+          children: [
+            Expanded(
+              child: _MarqueeTitle(
+                text: track.title,
+                style: _titleStyle,
               ),
-              const SizedBox(height: 8),
-              GestureDetector(
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => ArtistDetailScreen(
-                      artist: track.artist,
-                      accent: track.accent,
-                      channelUrl: track.channelUrl),
-                )),
-                child: Text(
-                  track.artist,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                '${Fmt.compact(track.plays)} plays',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.textTertiary,
-                ),
-              ),
-            ],
+            ),
+            const SizedBox(width: Sp.md),
+            FavButton(track: track, size: 30),
+          ],
+        ),
+        const SizedBox(height: 8),
+        GestureDetector(
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => ArtistDetailScreen(
+                artist: track.artist,
+                accent: track.accent,
+                channelUrl: track.channelUrl),
+          )),
+          child: Text(
+            track.artist,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textSecondary,
+            ),
           ),
         ),
-        const SizedBox(width: Sp.md),
-        FavButton(track: track, size: 30),
+        const SizedBox(height: 3),
+        Text(
+          '${Fmt.compact(track.plays)} plays',
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: AppColors.textTertiary,
+          ),
+        ),
       ],
+    );
+  }
+}
+
+/// Spotify-style title: continuous loop scroll when text overflows.
+class _MarqueeTitle extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+  const _MarqueeTitle({required this.text, required this.style});
+
+  @override
+  State<_MarqueeTitle> createState() => _MarqueeTitleState();
+}
+
+class _MarqueeTitleState extends State<_MarqueeTitle>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  double _textWidth = 0;
+  double _viewport = 0;
+
+  static const _startPause = Duration(milliseconds: 1500);
+  static const _gap = 48.0;
+  static const _pxPerSec = 40.0;
+
+  bool get _needsScroll => _textWidth > _viewport && _viewport > 0;
+
+  double get _cycle => _textWidth + _gap;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this);
+  }
+
+  @override
+  void didUpdateWidget(covariant _MarqueeTitle oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text || oldWidget.style != widget.style) {
+      _ctrl.stop();
+      _ctrl.value = 0;
+      setState(() {
+        _textWidth = 0;
+        _viewport = 0;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _startLoop() async {
+    if (!mounted || !_needsScroll) return;
+    await Future.delayed(_startPause);
+    if (!mounted || !_needsScroll) return;
+    final ms = (_cycle / _pxPerSec * 1000).clamp(2000, 20000).round();
+    _ctrl.duration = Duration(milliseconds: ms);
+    _ctrl.repeat();
+  }
+
+  void _measure(double maxWidth) {
+    if (maxWidth <= 0) return;
+    final painter = TextPainter(
+      text: TextSpan(text: widget.text, style: widget.style),
+      maxLines: 1,
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final tw = painter.width;
+    if ((tw - _textWidth).abs() < 0.5 && (maxWidth - _viewport).abs() < 0.5) {
+      return;
+    }
+    final wasScrolling = _needsScroll;
+    setState(() {
+      _textWidth = tw;
+      _viewport = maxWidth;
+    });
+    if (!_needsScroll) {
+      _ctrl.stop();
+      _ctrl.value = 0;
+    } else if (!wasScrolling || !_ctrl.isAnimating) {
+      _ctrl.value = 0;
+      _startLoop();
+    } else {
+      // Keep looping; refresh duration if cycle length changed.
+      final ms = (_cycle / _pxPerSec * 1000).clamp(2000, 20000).round();
+      _ctrl.duration = Duration(milliseconds: ms);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _measure(constraints.maxWidth);
+        });
+
+        Widget label() => Text(
+              widget.text,
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.visible,
+              style: widget.style,
+            );
+
+        if (!_needsScroll) {
+          return label();
+        }
+
+        return ClipRect(
+          child: ShaderMask(
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (rect) => const LinearGradient(
+              colors: [
+                Colors.white,
+                Colors.white,
+                Colors.transparent,
+              ],
+              stops: [0.0, 0.88, 1.0],
+            ).createShader(rect),
+            child: AnimatedBuilder(
+              animation: _ctrl,
+              builder: (_, child) => Transform.translate(
+                offset: Offset(-_cycle * _ctrl.value, 0),
+                child: child,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  label(),
+                  const SizedBox(width: _gap),
+                  label(),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

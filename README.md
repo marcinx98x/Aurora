@@ -62,6 +62,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 - Full-screen layout: blurred artwork behind a colour veil derived from the cover.
 - **Swipe down to dismiss** — drag the screen down to return to the mini-player without pausing playback (same as collapsing the player).
 - **Minimal top bar** — centred title with a plain **⋯** menu (no chevron or separate sleep-timer icon). Sleep timer lives in that menu, above track actions.
+- **Scrolling track title** — long titles marquee in a continuous loop on one line with the **like** heart fixed on the right (short titles stay still).
 - **Two-role dynamic colour** — a vivid *accent* for marks, a deep same-hue *backdrop* for the wash, each held to its WCAG ratio. See [Colour](#colour).
 - **Waveform seeker** — custom-painted bars with an elastic bump near the finger and a haptic tick per bar. In-app progress (mini-player and Now Playing) is polled while audio plays so the bar stays in sync even when `just_audio`'s position stream stalls; the Android media notification continues to interpolate independently.
 - **Album-art pulse**: orbiting particles and a breathing ring that speeds up while playing.

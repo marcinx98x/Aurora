@@ -7,6 +7,7 @@ import '../../state/player_controller.dart';
 import '../../state/providers.dart';
 import '../../widgets/artwork.dart';
 import '../../widgets/track_tile.dart';
+import '../library/add_to_playlist_sheet.dart';
 
 /// Expands a YouTube playlist / album / podcast search hit into playable tracks.
 class PlaylistBrowseScreen extends ConsumerWidget {
@@ -130,6 +131,14 @@ class PlaylistBrowseScreen extends ConsumerWidget {
                     onTap: () => ref
                         .read(playerControllerProvider.notifier)
                         .playQueue(tracks, startAt: i),
+                    trailing: IconButton(
+                      icon: const Icon(
+                        Icons.add_circle_outline_rounded,
+                        color: AppColors.textSecondary,
+                      ),
+                      onPressed: () =>
+                          AddToPlaylistSheet.show(context, tracks[i]),
+                    ),
                   ),
                 ),
               const SliverToBoxAdapter(child: SizedBox(height: 120)),

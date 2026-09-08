@@ -44,9 +44,9 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 ## <img src="docs/icons/features.svg" width="22" align="top"> Features
 
 ### <img src="docs/icons/search.svg" width="18" align="top"> Discovery & search
-- **Real YouTube search** through the resolver — debounced 350 ms, with **Tracks / Playlists / Albums / Podcasts** chips that actually change the query (`filter` on `/search`). Tracks play in the queue; playlists, albums, and podcasts open a browse screen that loads the list via `/playlist`, then **Play all** or pick a track.
+- **Real YouTube search** through the resolver — debounced 350 ms, with **Tracks / Playlists / Albums / Podcasts** chips that actually change the query (`filter` on `/search`). Tracks play in the queue; playlists, albums, and podcasts open a browse screen that loads the list via `/playlist`, then **Play all**, pick a track, or **add any track to your playlists** (same sheet as on Track search results).
 - **Live autocomplete** from YouTube's own suggestion endpoint, plus a persisted **search history** (tap to re-run, per-item delete, one-tap clear). Search lives on the bottom-nav **Search** tab (no search icon in the Home app bar).
-- **Home dashboard**: parallax header with the **profile avatar on the left** (opens Settings) and **Aurora on the right**, plus carousels for **For you** (personalized from listening history), Trending, Top Charts, Recently played and Quick downloads. Engagement tips that used to sit under a bell icon are now **Settings → Notifications**.
+- **Home dashboard**: parallax header with the **profile avatar on the left** (opens Settings) and **Aurora on the right**, a time-of-day greeting (**Good morning** / **Good afternoon** / **Good evening**), plus carousels for **For you** (personalized from listening history), Trending, Top Charts, Recently played and Quick downloads. Engagement tips that used to sit under a bell icon are now **Settings → Notifications**.
 - **Three states, one height** per section — shimmer skeleton, empty card, error card with a **Retry pill** that refetches only that carousel. Nothing jumps when a future resolves.
 
 ### <img src="docs/icons/play.svg" width="18" align="top"> Playback

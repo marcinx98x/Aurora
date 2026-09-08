@@ -44,9 +44,9 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 ## <img src="docs/icons/features.svg" width="22" align="top"> Features
 
 ### <img src="docs/icons/search.svg" width="18" align="top"> Discovery & search
-- **Real YouTube search** through the resolver — debounced 350 ms, with Tracks / Playlists / Albums chips.
-- **Live autocomplete** from YouTube's own suggestion endpoint, plus a persisted **search history** (tap to re-run, per-item delete, one-tap clear).
-- **Home dashboard**: parallax `SliverAppBar` header, carousels for **For you** (personalized from listening history), Trending, Top Charts, Recently played and Quick downloads.
+- **Real YouTube search** through the resolver — debounced 350 ms, with **Tracks / Playlists / Albums / Podcasts** chips that actually change the query (`filter` on `/search`). Tracks play in the queue; playlists, albums, and podcasts open a browse screen that loads the list via `/playlist`, then **Play all** or pick a track.
+- **Live autocomplete** from YouTube's own suggestion endpoint, plus a persisted **search history** (tap to re-run, per-item delete, one-tap clear). Search lives on the bottom-nav **Search** tab (no search icon in the Home app bar).
+- **Home dashboard**: parallax header with the **profile avatar on the left** (opens Settings) and **Aurora on the right**, plus carousels for **For you** (personalized from listening history), Trending, Top Charts, Recently played and Quick downloads. Engagement tips that used to sit under a bell icon are now **Settings → Notifications**.
 - **Three states, one height** per section — shimmer skeleton, empty card, error card with a **Retry pill** that refetches only that carousel. Nothing jumps when a future resolves.
 
 ### <img src="docs/icons/play.svg" width="18" align="top"> Playback
@@ -155,7 +155,8 @@ a shared cache, and a Range-seekable audio proxy.
 
 ```
 GET /health
-GET /search?q=…&limit=20     → [{id, title, artist, duration, thumbnail, views}]
+GET /search?q=…&limit=20&filter=tracks|playlists|albums|podcasts
+                             → [{id, title, artist, duration, thumbnail, views, kind, url}]
 GET /stream?v=VIDEO_ID       → audio bytes · HTTP Range · persistent cache
 GET /lyrics?title=&artist=   → synced LRC when lrclib has it, else plain text
 GET /playlist?url=…          → {title, uploader, tracks[]} from a playlist / album / mix link

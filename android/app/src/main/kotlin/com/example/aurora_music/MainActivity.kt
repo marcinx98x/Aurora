@@ -99,6 +99,9 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        CastChannelHelper(this, flutterEngine.dartExecutor.binaryMessenger).register()
+        NsdChannelHelper(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 
     private fun queryAudio(): List<HashMap<String, Any?>> {

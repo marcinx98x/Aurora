@@ -8,7 +8,6 @@ import android.provider.MediaStore
 import android.provider.Settings
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
 // AudioServiceActivity (instead of FlutterActivity) so just_audio_background /
@@ -18,7 +17,6 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : AudioServiceActivity() {
     private val channel = "aurora/ringtone"
     private val mediaChannel = "aurora/media"
-    private var nsdHelper: NsdChannelHelper? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -101,29 +99,6 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
-
-        // NSD: register thin channels; create NsdChannelHelper on first use.
-        val messenger = flutterEngine.dartExecutor.binaryMessenger
-        MethodChannel(messenger, "aurora/nsd").setMethodCallHandler { call, result ->
-            ensureNsd().onMethodCall(call, result)
-        }
-        EventChannel(messenger, "aurora/nsd/devices").setStreamHandler(
-            object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    ensureNsd().onListen(arguments, events)
-                }
-
-                override fun onCancel(arguments: Any?) {
-                    nsdHelper?.onCancel(arguments)
-                }
-            }
-        )
-    }
-
-    private fun ensureNsd(): NsdChannelHelper {
-        val existing = nsdHelper
-        if (existing != null) return existing
-        return NsdChannelHelper(this).also { nsdHelper = it }
     }
 
     private fun queryAudio(): List<HashMap<String, Any?>> {

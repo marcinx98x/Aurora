@@ -223,6 +223,9 @@
 
   const options = new cast.framework.CastReceiverOptions();
   options.disableIdleTimeout = true;
+  options.customNamespaces = Object.assign({}, options.customNamespaces || {}, {
+    [NAMESPACE]: cast.framework.system.MessageType.JSON,
+  });
   context.start(options);
   startTicker();
 })();

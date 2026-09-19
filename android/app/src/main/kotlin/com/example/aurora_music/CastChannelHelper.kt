@@ -43,6 +43,7 @@ class CastChannelHelper(
     private var statusSink: EventChannel.EventSink? = null
     private var commandsSink: EventChannel.EventSink? = null
     private var router: MediaRouter? = null
+    private var routeSelector: MediaRouteSelector? = null
     private var callback: MediaRouter.Callback? = null
     private var statusListener: RemoteMediaClient.Callback? = null
     private var sessionListener: SessionManagerListener<CastSession>? = null
@@ -186,12 +187,20 @@ class CastChannelHelper(
             throw IllegalStateException("CastContext unavailable: ${e.message}", e)
         }
         ensureSessionListener(castContext)
-        router = MediaRouter.getInstance(context)
+        val r = MediaRouter.getInstance(context)
+        router = r
+        // Avoid stacking callbacks on every sheet refresh.
+        callback?.let { existing ->
+            try {
+                r.removeCallback(existing)
+            } catch (_: Exception) { }
+        }
         val selector = MediaRouteSelector.Builder()
             .addControlCategory(
                 CastMediaControlIntent.categoryForCast(BuildConfig.CAST_RECEIVER_APP_ID)
             )
             .build()
+        routeSelector = selector
         if (callback == null) {
             callback = object : MediaRouter.Callback() {
                 override fun onRouteAdded(router: MediaRouter, route: MediaRouter.RouteInfo) {
@@ -207,31 +216,48 @@ class CastChannelHelper(
                 }
             }
         }
-        router?.addCallback(selector, callback!!, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
+        r.addCallback(selector, callback!!, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
         emitDevices()
     }
 
     private fun stopDiscovery() {
         callback?.let { cb ->
-            router?.removeCallback(cb)
+            try {
+                router?.removeCallback(cb)
+            } catch (_: Exception) { }
         }
     }
 
     private fun emitDevices() {
         val r = router ?: MediaRouter.getInstance(context).also { router = it }
-        val list = ArrayList<HashMap<String, Any?>>()
+        val selector = routeSelector
+            ?: MediaRouteSelector.Builder()
+                .addControlCategory(
+                    CastMediaControlIntent.categoryForCast(BuildConfig.CAST_RECEIVER_APP_ID)
+                )
+                .build()
+                .also { routeSelector = it }
+
+        // One entry per display name — Chromecast often exposes multiple remote routes.
+        val byName = LinkedHashMap<String, HashMap<String, Any?>>()
         for (route in r.routes) {
             if (!route.isEnabled) continue
             if (route.isDefault) continue
             if (route.playbackType != MediaRouter.RouteInfo.PLAYBACK_TYPE_REMOTE) continue
-            list.add(
-                hashMapOf(
-                    "id" to route.id,
-                    "name" to route.name,
-                    "model" to (route.description ?: "Cast"),
-                )
+            if (!route.matchesSelector(selector)) continue
+            val key = route.name.trim().lowercase()
+            if (key.isEmpty()) continue
+            val existing = byName[key]
+            val candidate = hashMapOf<String, Any?>(
+                "id" to route.id,
+                "name" to route.name,
+                "model" to (route.description ?: "Cast"),
             )
+            if (existing == null || route.isSelected) {
+                byName[key] = candidate
+            }
         }
+        val list = ArrayList(byName.values)
         main.post { devicesSink?.success(list) }
     }
 

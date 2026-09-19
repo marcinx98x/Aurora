@@ -56,6 +56,13 @@ class CastTransport implements RemoteTransport {
                       if (m['id'] != null) 'routeId': '${m['id']}',
                     },
                   ))
+              .fold<Map<String, StreamingDevice>>({}, (acc, d) {
+                final key = d.name.trim().toLowerCase();
+                if (key.isEmpty) return acc;
+                acc.putIfAbsent(key, () => d);
+                return acc;
+              })
+              .values
               .toList(growable: false);
           _devicesCtrl.add(devices);
         },

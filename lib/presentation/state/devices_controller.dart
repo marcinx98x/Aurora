@@ -5,8 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/casting/aurora_connect.dart';
-import '../../core/casting/cast_lyrics.dart';
-import '../../core/casting/cast_transport.dart';
 import '../../core/casting/dlna_transport.dart';
 import '../../core/casting/remote_playback_port.dart';
 import '../../core/casting/remote_transport.dart';
@@ -15,12 +13,10 @@ import '../../core/config/app_config.dart';
 import '../../domain/entities/track.dart';
 import 'output_controller.dart';
 import 'player_controller.dart';
-import 'providers.dart';
 
 @immutable
 class DevicesState {
   final StreamingDevice active;
-  final List<StreamingDevice> castDevices;
   final List<StreamingDevice> dlnaDevices;
   final List<StreamingDevice> auroraDevices;
   final bool discovering;
@@ -31,7 +27,6 @@ class DevicesState {
 
   const DevicesState({
     this.active = StreamingDevice.local,
-    this.castDevices = const [],
     this.dlnaDevices = const [],
     this.auroraDevices = const [],
     this.discovering = false,
@@ -45,7 +40,6 @@ class DevicesState {
 
   DevicesState copyWith({
     StreamingDevice? active,
-    List<StreamingDevice>? castDevices,
     List<StreamingDevice>? dlnaDevices,
     List<StreamingDevice>? auroraDevices,
     bool? discovering,
@@ -59,7 +53,6 @@ class DevicesState {
   }) =>
       DevicesState(
         active: active ?? this.active,
-        castDevices: castDevices ?? this.castDevices,
         dlnaDevices: dlnaDevices ?? this.dlnaDevices,
         auroraDevices: auroraDevices ?? this.auroraDevices,
         discovering: discovering ?? this.discovering,
@@ -75,16 +68,13 @@ class DevicesState {
 }
 
 class DevicesController extends Notifier<DevicesState> {
-  late final CastTransport _cast;
   late final DlnaTransport _dlna;
   late final AuroraConnectTransport _aurora;
   late final AuroraConnectReceiver _receiver;
 
-  StreamSubscription? _castDevSub;
   StreamSubscription? _dlnaDevSub;
   StreamSubscription? _auroraDevSub;
   StreamSubscription? _statusSub;
-  StreamSubscription? _castCmdSub;
   bool _handlingRemoteEnd = false;
 
   RemoteTransport? _activeTransport;
@@ -95,7 +85,6 @@ class DevicesController extends Notifier<DevicesState> {
 
   @override
   DevicesState build() {
-    _cast = CastTransport();
     _dlna = DlnaTransport();
     _aurora = AuroraConnectTransport();
     _receiver = AuroraConnectReceiver();
@@ -113,9 +102,6 @@ class DevicesController extends Notifier<DevicesState> {
   /// Called from the Devices sheet. Discovery only — never from main.
   Future<void> refreshDiscovery() async {
     state = state.copyWith(discovering: true, clearError: true);
-    _castDevSub ??= _cast.devices.listen((list) {
-      state = state.copyWith(castDevices: list);
-    });
     _dlnaDevSub ??= _dlna.devices.listen((list) {
       state = state.copyWith(dlnaDevices: list);
     });
@@ -129,7 +115,6 @@ class DevicesController extends Notifier<DevicesState> {
     });
 
     await Future.wait([
-      _cast.startDiscovery(),
       _dlna.startDiscovery(),
       _aurora.startDiscovery(),
     ]);
@@ -208,10 +193,9 @@ class DevicesController extends Notifier<DevicesState> {
     if (_apiBaseLooksLocalOnly()) {
       state = state.copyWith(
         error:
-            'Server must be reachable on the same Wi-Fi (Cast/DLNA cannot use localhost)',
+            'Server must be reachable on the same Wi-Fi (DLNA cannot use localhost)',
       );
-      if (device.type == StreamingDeviceType.cast ||
-          device.type == StreamingDeviceType.dlna) {
+      if (device.type == StreamingDeviceType.dlna) {
         return;
       }
     }
@@ -222,7 +206,6 @@ class DevicesController extends Notifier<DevicesState> {
       _statusSub?.cancel();
 
       final transport = switch (device.type) {
-        StreamingDeviceType.cast => _cast,
         StreamingDeviceType.dlna => _dlna,
         StreamingDeviceType.aurora => _aurora,
         StreamingDeviceType.local => null,
@@ -232,10 +215,6 @@ class DevicesController extends Notifier<DevicesState> {
       await transport.connect(device);
       _activeTransport = transport;
       _bindPort();
-      _castCmdSub?.cancel();
-      if (device.type == StreamingDeviceType.cast) {
-        _castCmdSub = _cast.commands.listen(_onCastCommand);
-      }
       _statusSub = transport.status.listen((snap) {
         state = state.copyWith(remoteSnapshot: snap);
         player.applyRemoteSnapshot(snap);
@@ -248,7 +227,6 @@ class DevicesController extends Notifier<DevicesState> {
       });
 
       final uri = await player.resolveStreamUriForRemote(track);
-      final custom = await _customDataFor(track);
       await transport.load(
         streamUrl: uri.toString(),
         title: track.title,
@@ -256,7 +234,6 @@ class DevicesController extends Notifier<DevicesState> {
         artworkUrl: track.artworkUrl.isNotEmpty ? track.artworkUrl : null,
         position: ps.position,
         duration: ps.total,
-        customData: custom,
       );
 
       state = state.copyWith(
@@ -282,20 +259,6 @@ class DevicesController extends Notifier<DevicesState> {
         base.contains('10.0.2.2');
   }
 
-  Future<Map<String, dynamic>?> _customDataFor(Track track) async {
-    if (_activeTransport?.type != StreamingDeviceType.cast) return null;
-    final lyrics = await lyricsCustomDataFor(
-      track,
-      ref.read(localStoreProvider),
-    );
-    return {
-      ...lyrics,
-      'title': track.title,
-      'artist': track.artist,
-      if (track.artworkUrl.isNotEmpty) 'artworkUrl': track.artworkUrl,
-    };
-  }
-
   Future<void> _onRemoteTrackEnded() async {
     if (_handlingRemoteEnd || !state.isRemote) return;
     _handlingRemoteEnd = true;
@@ -306,28 +269,14 @@ class DevicesController extends Notifier<DevicesState> {
     }
   }
 
-  void _onCastCommand(String action) {
-    final player = ref.read(playerControllerProvider.notifier);
-    switch (action) {
-      case 'next':
-        unawaited(player.next());
-        break;
-      case 'previous':
-        unawaited(player.previous());
-        break;
-    }
-  }
-
   Future<void> _returnToLocal({required bool resume}) async {
-    Duration? pos = state.remoteSnapshot?.position;
+    final pos = state.remoteSnapshot?.position;
     try {
       await _activeTransport?.stop();
       await _activeTransport?.disconnect();
     } catch (_) {}
     _statusSub?.cancel();
     _statusSub = null;
-    _castCmdSub?.cancel();
-    _castCmdSub = null;
     _activeTransport = null;
     _clearPort();
     state = state.copyWith(
@@ -360,7 +309,6 @@ class DevicesController extends Notifier<DevicesState> {
   }) async {
     final t = _activeTransport;
     if (t == null) return;
-    final custom = await _customDataFor(track);
     await t.load(
       streamUrl: streamUri.toString(),
       title: track.title,
@@ -368,7 +316,6 @@ class DevicesController extends Notifier<DevicesState> {
       artworkUrl: track.artworkUrl.isNotEmpty ? track.artworkUrl : null,
       position: position,
       duration: duration,
-      customData: custom,
     );
   }
 
@@ -433,12 +380,9 @@ class DevicesController extends Notifier<DevicesState> {
     _receiverStateTimer?.cancel();
     _clearPort();
     await _statusSub?.cancel();
-    await _castCmdSub?.cancel();
-    await _castDevSub?.cancel();
     await _dlnaDevSub?.cancel();
     await _auroraDevSub?.cancel();
     await _receiver.stop();
-    await _cast.dispose();
     await _dlna.dispose();
     await _aurora.dispose();
   }

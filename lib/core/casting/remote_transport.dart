@@ -22,7 +22,6 @@ abstract class RemoteTransport {
     Duration position = Duration.zero,
     Duration duration = Duration.zero,
     String contentType = 'audio/mp4',
-    Map<String, dynamic>? customData,
   });
 
   Future<void> play();

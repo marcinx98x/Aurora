@@ -8,7 +8,6 @@ range-proxy so the app never talks to googlevideo directly (no 403).
 
 Endpoints:
   GET /health
-  GET /cast/                       -> Custom Cast CAF receiver (static)
   GET /search?q=...&limit=20&filter=tracks|playlists|albums|podcasts
                              -> [{id,title,artist,duration,thumbnail,views,kind,url}]
   GET /stream?v=VIDEO_ID          -> audio bytes (HTTP Range supported)
@@ -37,29 +36,22 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.id_token import verify_firebase_token
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 
 app = FastAPI(title="Aurora Resolver")
-
-# Public Cast CAF receiver (Chromecast loads this without API key).
-_CAST_DIR = Path(__file__).resolve().parent / "cast_receiver"
 
 
 @app.middleware("http")
 async def verify_secret_key(request: Request, call_next):
     expected_secret = os.environ.get("AURORA_SECRET_KEY")
-    path = request.url.path
-    if path == "/health" or path.startswith("/cast"):
-        return await call_next(request)
     if expected_secret:
-        client_secret = request.headers.get("x-api-key") or request.query_params.get("key")
-        if client_secret != expected_secret:
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Unauthorized: Invalid or missing API key"}
-            )
+        if request.url.path != "/health":
+            client_secret = request.headers.get("x-api-key") or request.query_params.get("key")
+            if client_secret != expected_secret:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized: Invalid or missing API key"}
+                )
     return await call_next(request)
 
 
@@ -1328,11 +1320,3 @@ def stream(v: str, request: Request) -> StreamingResponse:
         headers["content-range"] = f"bytes {start}-{end}/{size}"
         status = 206
     return StreamingResponse(body(), status_code=status, headers=headers)
-
-
-if _CAST_DIR.is_dir():
-    app.mount(
-        "/cast",
-        StaticFiles(directory=str(_CAST_DIR), html=True),
-        name="cast",
-    )

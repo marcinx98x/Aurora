@@ -1,5 +1,5 @@
 /// A discovered or local playback target.
-enum StreamingDeviceType { local, cast, dlna, aurora }
+enum StreamingDeviceType { local, dlna, aurora }
 
 class StreamingDevice {
   final String id;

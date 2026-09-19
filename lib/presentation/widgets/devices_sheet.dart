@@ -9,7 +9,7 @@ import 'glass.dart';
 import '../state/devices_controller.dart';
 import '../state/output_controller.dart';
 
-/// Spotify-style devices picker: this phone, DLNA, Aurora Connect (+ Cast later).
+/// Spotify-style devices picker: this phone, DLNA, Aurora Connect.
 class DevicesSheet extends ConsumerStatefulWidget {
   const DevicesSheet({super.key});
 
@@ -133,18 +133,6 @@ class _DevicesSheetState extends ConsumerState<DevicesSheet> {
                         child: const Text('Output'),
                       ),
                     ),
-                    _section(context, 'Google Cast'),
-                    if (state.castDevices.isEmpty)
-                      _empty(context, 'No Cast devices nearby')
-                    else
-                      ...state.castDevices.map((d) => _tile(
-                            context,
-                            device: d,
-                            selected: state.active == d,
-                            leading: const Icon(Icons.cast_rounded,
-                                color: AppColors.accentBright),
-                            onTap: () => _pick(d),
-                          )),
                     _section(context, 'Network (DLNA)'),
                     if (state.dlnaDevices.isEmpty)
                       _empty(context, 'No DLNA renderers found')
@@ -241,7 +229,6 @@ class DevicesChip extends ConsumerWidget {
     final controlled = ref.watch(
         devicesControllerProvider.select((s) => s.isReceiverControlled));
     final icon = switch (chip.type) {
-      StreamingDeviceType.cast => Icons.cast_connected_rounded,
       StreamingDeviceType.dlna => Icons.tv_rounded,
       StreamingDeviceType.aurora => Icons.phone_android_rounded,
       StreamingDeviceType.local => Icons.speaker_rounded,

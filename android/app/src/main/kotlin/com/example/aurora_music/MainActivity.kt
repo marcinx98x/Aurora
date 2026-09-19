@@ -19,7 +19,6 @@ class MainActivity : AudioServiceActivity() {
     private val channel = "aurora/ringtone"
     private val mediaChannel = "aurora/media"
     private var nsdHelper: NsdChannelHelper? = null
-    private var castHelper: CastChannelHelper? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -119,56 +118,12 @@ class MainActivity : AudioServiceActivity() {
                 }
             }
         )
-
-        // Cast: thin channels only — CastContext created on first startDiscovery.
-        MethodChannel(messenger, "aurora/cast").setMethodCallHandler { call, result ->
-            ensureCast().onMethodCall(call, result)
-        }
-        EventChannel(messenger, "aurora/cast/devices").setStreamHandler(
-            object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    ensureCast().onListen(arguments, events)
-                }
-
-                override fun onCancel(arguments: Any?) {
-                    castHelper?.onCancel(arguments)
-                }
-            }
-        )
-        EventChannel(messenger, "aurora/cast/status").setStreamHandler(
-            object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    ensureCast().statusHandler().onListen(arguments, events)
-                }
-
-                override fun onCancel(arguments: Any?) {
-                    castHelper?.statusHandler()?.onCancel(arguments)
-                }
-            }
-        )
-        EventChannel(messenger, "aurora/cast/commands").setStreamHandler(
-            object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    ensureCast().commandsHandler().onListen(arguments, events)
-                }
-
-                override fun onCancel(arguments: Any?) {
-                    castHelper?.commandsHandler()?.onCancel(arguments)
-                }
-            }
-        )
     }
 
     private fun ensureNsd(): NsdChannelHelper {
         val existing = nsdHelper
         if (existing != null) return existing
         return NsdChannelHelper(this).also { nsdHelper = it }
-    }
-
-    private fun ensureCast(): CastChannelHelper {
-        val existing = castHelper
-        if (existing != null) return existing
-        return CastChannelHelper(this).also { castHelper = it }
     }
 
     private fun queryAudio(): List<HashMap<String, Any?>> {

@@ -494,13 +494,38 @@ class PlayerController extends Notifier<PlayerState> {
   ja.ConcatenatingAudioSource? _concat;
   List<int> _windowQueueIndices = [];
 
-  MediaItem _media(Track t) => MediaItem(
-        id: t.id,
-        title: t.title,
-        artist: t.artist,
-        duration: t.duration > Duration.zero ? t.duration : null,
-        artUri: t.artworkUrl.isNotEmpty ? Uri.parse(t.artworkUrl) : null,
-      );
+  MediaItem _media(Track t) {
+    final title = t.title.trim().isEmpty ? 'Unknown' : t.title.trim();
+    final artist = t.artist.trim().isEmpty ? 'Unknown artist' : t.artist.trim();
+    // Non-zero duration helps older AVRCP displays (e.g. Onkyo) accept TITLE.
+    final duration = t.duration > Duration.zero
+        ? t.duration
+        : const Duration(milliseconds: 1);
+    return MediaItem(
+      id: t.id,
+      title: title,
+      artist: artist,
+      album: artist,
+      displayTitle: title,
+      displaySubtitle: artist,
+      duration: duration,
+      artUri: t.artworkUrl.isNotEmpty ? Uri.parse(t.artworkUrl) : null,
+    );
+  }
+
+  /// Nudge MediaSession so AVRCP receivers re-read TITLE after a route change.
+  Future<void> republishNowPlayingMetadata() async {
+    final track = state.current;
+    if (track == null) return;
+    try {
+      final playing = _player.playing;
+      if (playing) {
+        await _player.pause();
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+        await _player.play();
+      }
+    } catch (_) {}
+  }
 
   Future<void> playQueue(List<Track> tracks, {int startAt = 0}) async {
     if (tracks.isEmpty) return;

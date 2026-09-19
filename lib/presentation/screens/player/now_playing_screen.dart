@@ -14,6 +14,7 @@ import '../../widgets/waveform_seeker.dart';
 import '../../state/player_controller.dart';
 import '../../state/favorites_controller.dart';
 import '../../state/output_controller.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../artist/artist_detail_screen.dart';
 import '../library/add_to_playlist_sheet.dart';
 import '../library/track_context_sheet.dart';
@@ -350,60 +351,12 @@ class _SpeedChip extends ConsumerWidget {
 class _OutputChip extends ConsumerWidget {
   const _OutputChip();
 
-  void _sheet(BuildContext context, OutputDevice d) {
+  void _sheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (_) => Glass(
-        radius: const BorderRadius.vertical(top: Radii.xl),
-        blur: 30,
-        opacity: 0.16,
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: Sp.md),
-              Container(
-                  width: 44,
-                  height: 4,
-                  decoration: const BoxDecoration(
-                      color: AppColors.glassStroke,
-                      borderRadius: Radii.rPill)),
-              Padding(
-                padding: const EdgeInsets.all(Sp.lg),
-                child: Text('Audio output',
-                    style: Theme.of(context).textTheme.titleLarge),
-              ),
-              ListTile(
-                leading: Icon(_iconFor(d.kind),
-                    color: AppColors.accentBright),
-                title: Text('Playing on ${d.label}'),
-                trailing:
-                    const Icon(Icons.check_rounded, color: AppColors.accentBright),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(Sp.lg, Sp.sm, Sp.lg, Sp.lg),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.accent,
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(vertical: Sp.md)),
-                    onPressed: () {
-                      Navigator.pop(context);
-                      openOutputPicker();
-                    },
-                    icon: const Icon(Icons.swap_horiz_rounded),
-                    label: const Text('Switch output (speaker / Bluetooth)'),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      isScrollControlled: true,
+      builder: (_) => const _OutputSheet(),
     );
   }
 
@@ -418,7 +371,7 @@ class _OutputChip extends ConsumerWidget {
     final d = ref.watch(outputDeviceProvider).valueOrNull ??
         const OutputDevice(OutputKind.speaker, 'Device Speakers');
     return GestureDetector(
-      onTap: () => _sheet(context, d),
+      onTap: () => _sheet(context),
       child: Glass(
         radius: Radii.rPill,
         blur: 18,
@@ -433,6 +386,197 @@ class _OutputChip extends ConsumerWidget {
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: AppColors.textSecondary)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OutputSheet extends ConsumerStatefulWidget {
+  const _OutputSheet();
+
+  @override
+  ConsumerState<_OutputSheet> createState() => _OutputSheetState();
+}
+
+class _OutputSheetState extends ConsumerState<_OutputSheet> {
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await Permission.bluetoothConnect.request();
+      } catch (_) {}
+      if (mounted) ref.invalidate(audioOutputsProvider);
+    });
+  }
+
+  Future<void> _select(OutputDevice d) async {
+    if (_busy) return;
+    final id = d.id;
+    if (id == null || id.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not connect')),
+      );
+      return;
+    }
+    setState(() => _busy = true);
+    final ok = await selectAudioOutput(id);
+    if (!mounted) return;
+    if (ok) {
+      // Let system A2DP settle, then refresh chip from getDevices.
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      if (!mounted) return;
+      try {
+        await ref
+            .read(playerControllerProvider.notifier)
+            .republishNowPlayingMetadata();
+      } catch (_) {}
+      if (!mounted) return;
+      ref.invalidate(audioOutputsProvider);
+      ref.invalidate(outputDeviceProvider);
+      setState(() => _busy = false);
+      Navigator.pop(context);
+      return;
+    }
+    setState(() => _busy = false);
+    ref.invalidate(audioOutputsProvider);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not connect')),
+    );
+  }
+
+  IconData _iconFor(OutputKind k) => switch (k) {
+        OutputKind.bluetooth => Icons.bluetooth_audio_rounded,
+        OutputKind.headphones => Icons.headphones_rounded,
+        OutputKind.speaker => Icons.smartphone_rounded,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final outputs = ref.watch(audioOutputsProvider);
+
+    return Glass(
+      radius: const BorderRadius.vertical(top: Radii.xl),
+      blur: 30,
+      opacity: 0.16,
+      child: SafeArea(
+        top: false,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.55,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: Sp.md),
+              Container(
+                width: 44,
+                height: 4,
+                decoration: const BoxDecoration(
+                  color: AppColors.glassStroke,
+                  borderRadius: Radii.rPill,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(Sp.lg, Sp.lg, Sp.lg, Sp.sm),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Audio output',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                    if (_busy || outputs.isLoading)
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    else
+                      IconButton(
+                        tooltip: 'Refresh',
+                        onPressed: () =>
+                            ref.invalidate(audioOutputsProvider),
+                        icon: const Icon(Icons.refresh_rounded),
+                      ),
+                  ],
+                ),
+              ),
+              Flexible(
+                child: outputs.when(
+                  loading: () => const Padding(
+                    padding: EdgeInsets.all(Sp.lg),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+                  error: (_, __) => Padding(
+                    padding: const EdgeInsets.all(Sp.lg),
+                    child: Text(
+                      'Could not list devices',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                    ),
+                  ),
+                  data: (list) {
+                    if (list.isEmpty) {
+                      return Padding(
+                        padding: const EdgeInsets.all(Sp.lg),
+                        child: Text(
+                          'No outputs found',
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: AppColors.textSecondary,
+                                  ),
+                        ),
+                      );
+                    }
+                    return ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: list.length,
+                      itemBuilder: (context, i) {
+                        final d = list[i];
+                        return ListTile(
+                          leading: Icon(
+                            _iconFor(d.kind),
+                            color: AppColors.accentBright,
+                          ),
+                          title: Text(d.label),
+                          subtitle: Text(switch (d.kind) {
+                            OutputKind.speaker => 'This phone',
+                            OutputKind.headphones => 'Wired / USB',
+                            OutputKind.bluetooth => 'Bluetooth',
+                          }),
+                          trailing: d.isActive
+                              ? const Icon(Icons.check_rounded,
+                                  color: AppColors.accentBright)
+                              : null,
+                          onTap: () => _select(d),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(Sp.lg, Sp.sm, Sp.lg, Sp.lg),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      openOutputPicker();
+                    },
+                    icon: const Icon(Icons.tune_rounded),
+                    label: const Text('More (system)'),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

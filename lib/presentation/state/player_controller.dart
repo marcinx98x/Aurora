@@ -9,6 +9,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:palette_generator/palette_generator.dart';
+import '../../core/casting/remote_playback_port.dart';
+import '../../core/casting/streaming_device.dart';
 import '../../core/config/app_config.dart';
 import '../../core/notifications/notification_service.dart';
 import '../../core/theme/dynamic_palette.dart';
@@ -128,6 +130,104 @@ class PlayerController extends Notifier<PlayerState> {
   HttpClient? _warmClient;
   Future<void>? _warmFuture;
   Future<void> _streamProbeChain = Future<void>.value();
+
+  bool get _isRemotePlayback =>
+      ref.read(remotePlaybackPortProvider).isActive;
+
+  /// Pause local engine without treating it as an end-user pause forever.
+  Future<void> pauseForRemoteHandoff() async {
+    _userPaused = true;
+    _cancelFade();
+    try {
+      await _player.setVolume(_baseVolume);
+      await _player.pause();
+    } catch (_) {}
+    state = state.copyWith(isPlaying: false);
+  }
+
+  Future<void> resumeAfterRemoteHandoff({Duration? position}) async {
+    _userPaused = false;
+    final start = position ?? state.position;
+    if (!state.hasTrack) return;
+    await _loadCurrent(autoplay: true, startAt: start, recordRecent: false);
+  }
+
+  void applyRemoteSnapshot(RemotePlaybackSnapshot snap) {
+    if (!_isRemotePlayback) return;
+    state = state.copyWith(
+      position: snap.position,
+      duration: snap.duration > Duration.zero ? snap.duration : state.duration,
+      isPlaying: snap.isPlaying,
+      isLoading: snap.isLoading,
+      error: snap.error,
+    );
+  }
+
+  Future<Uri> resolveStreamUriForRemote(Track track) => _getTrackUri(track);
+
+  /// Play a stream URL pushed by another Aurora (receiver / Connect).
+  Future<void> playAsReceiver({
+    required String title,
+    required String artist,
+    required String artworkUrl,
+    required String streamUrl,
+    int positionMs = 0,
+    int durationMs = 0,
+  }) async {
+    final track = Track(
+      id: 'aurora-rx-${streamUrl.hashCode}',
+      title: title,
+      artist: artist,
+      artworkUrl: artworkUrl,
+      duration: Duration(milliseconds: durationMs),
+    );
+    _sessionRestorePending = false;
+    _userPaused = false;
+    state = state.copyWith(
+      queue: [track],
+      index: 0,
+      position: Duration(milliseconds: positionMs),
+      duration: Duration(milliseconds: durationMs),
+      isLoading: true,
+    );
+    final token = ++_loadToken;
+    try {
+      final uri = Uri.parse(streamUrl);
+      _lastSourceSetTime = DateTime.now();
+      _concat = null;
+      _windowQueueIndices = [0];
+      _concatBaseIndex = 0;
+      await _player.setAudioSource(
+        _audioItem(track, uri),
+        initialPosition: Duration(milliseconds: positionMs),
+      );
+      if (token != _loadToken) return;
+      state = state.copyWith(isLoading: false);
+      await _player.setVolume(_baseVolume);
+      await _player.play();
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: 'Receiver playback failed: $e',
+      );
+    }
+  }
+
+  Future<void> receiverPlay() async {
+    _userPaused = false;
+    await _player.setVolume(_baseVolume);
+    await _player.play();
+  }
+
+  Future<void> receiverPause() async {
+    _userPaused = true;
+    await _player.pause();
+  }
+
+  Future<void> receiverSeek(Duration position) async {
+    await _player.seek(position);
+    state = state.copyWith(position: position);
+  }
 
   @override
   PlayerState build() {
@@ -519,6 +619,17 @@ class PlayerController extends Notifier<PlayerState> {
   void playSingle(Track track) => playQueue([track]);
 
   Future<void> toggle() async {
+    if (_isRemotePlayback) {
+      final port = ref.read(remotePlaybackPortProvider);
+      if (state.isPlaying) {
+        await port.pause();
+        state = state.copyWith(isPlaying: false);
+      } else {
+        await port.play();
+        state = state.copyWith(isPlaying: true);
+      }
+      return;
+    }
     if (_player.playing) {
       await _pauseInternal();
     } else if (_player.processingState == ja.ProcessingState.idle &&
@@ -545,6 +656,12 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   Future<void> pause() async {
+    if (_isRemotePlayback) {
+      await ref.read(remotePlaybackPortProvider).pause();
+      state = state.copyWith(isPlaying: false);
+      await persistSessionNow();
+      return;
+    }
     if (_player.playing) {
       await _pauseInternal();
       await persistSessionNow();
@@ -582,6 +699,29 @@ class PlayerController extends Notifier<PlayerState> {
   }
 
   Future<void> previous() async {
+    if (_isRemotePlayback) {
+      if (state.position.inSeconds > 3) {
+        await ref
+            .read(remotePlaybackPortProvider)
+            .seek(Duration.zero);
+        state = state.copyWith(position: Duration.zero);
+        return;
+      }
+      if (state.index == 0) {
+        await ref
+            .read(remotePlaybackPortProvider)
+            .seek(Duration.zero);
+        state = state.copyWith(position: Duration.zero);
+        return;
+      }
+      _userPaused = false;
+      state = state.copyWith(
+          index: state.index - 1,
+          position: Duration.zero,
+          duration: Duration.zero);
+      await _loadCurrent(autoplay: true);
+      return;
+    }
     if (state.position.inSeconds > 3) {
       await _player.seek(Duration.zero);
       return;
@@ -598,8 +738,15 @@ class PlayerController extends Notifier<PlayerState> {
     await _loadCurrent(autoplay: true);
   }
 
-  Future<void> seek(double fraction) =>
-      _player.seek(state.total * fraction.clamp(0.0, 1.0));
+  Future<void> seek(double fraction) async {
+    final target = state.total * fraction.clamp(0.0, 1.0);
+    if (_isRemotePlayback) {
+      await ref.read(remotePlaybackPortProvider).seek(target);
+      state = state.copyWith(position: target);
+      return;
+    }
+    await _player.seek(target);
+  }
 
   void _onNativeIndexChanged(int newIdx) {
     if (newIdx < 0 || newIdx >= _windowQueueIndices.length) return;
@@ -835,6 +982,39 @@ class PlayerController extends Notifier<PlayerState> {
       final uri = await _getTrackUri(track);
       if (token != _loadToken) return;
 
+      // Cast / DLNA / Aurora Connect: push stream to remote transport.
+      if (_isRemotePlayback) {
+        if (!_uriIsRemote(uri)) {
+          state = state.copyWith(
+            isLoading: false,
+            error: 'Local files can only play on this phone',
+          );
+          _advancing = false;
+          return;
+        }
+        try {
+          await _player.pause();
+        } catch (_) {}
+        await ref.read(remotePlaybackPortProvider).loadTrack(
+              track,
+              uri,
+              position: startAt,
+              duration: track.duration,
+            );
+        if (token != _loadToken) return;
+        state = state.copyWith(
+          isLoading: false,
+          isPlaying: autoplay,
+          position: startAt,
+          duration: track.duration,
+        );
+        if (track.id != _advanceFromId) _advanceFromId = null;
+        _applyPalette(track);
+        await _persistSession();
+        _advancing = false;
+        return;
+      }
+
       // Do not stop() first: that tears down the media foreground service
       // before the next source can play. setAudioSource replaces the item.
 
@@ -1041,7 +1221,11 @@ class PlayerController extends Notifier<PlayerState> {
     _baseVolume = vol;
     // A deliberate volume change outranks any fade in flight.
     _cancelFade();
-    await _player.setVolume(vol);
+    if (_isRemotePlayback) {
+      await ref.read(remotePlaybackPortProvider).setVolume(vol);
+    } else {
+      await _player.setVolume(vol);
+    }
     state = state.copyWith(volume: vol);
   }
 

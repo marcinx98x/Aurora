@@ -5,11 +5,50 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../state/auth_controller.dart';
 import '../../state/connectivity_controller.dart';
+import '../../state/playlist_controller.dart';
 import '../../state/providers.dart';
 import '../../widgets/aurora_refresh.dart';
 import '../../widgets/glass.dart';
 import '../../widgets/section_carousel.dart';
+import '../library/playlist_detail_screen.dart';
+import '../search/playlist_browse_screen.dart';
 import '../settings/settings_screen.dart';
+import '../../../domain/entities/playlist.dart';
+import '../../../domain/entities/recent_playlist.dart';
+import '../../../domain/entities/track.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+
+/// MRU recent playlists, filled up to 4 with library playlists when needed.
+List<RecentPlaylist> _quickAccessPlaylists({
+  required List<RecentPlaylist> recent,
+  required List<Playlist> library,
+}) {
+  final out = <RecentPlaylist>[];
+  final seen = <String>{};
+
+  void add(RecentPlaylist item) {
+    if (out.length >= 4) return;
+    if (!seen.add(item.id)) return;
+    if (item.libraryId != null) seen.add('lib:${item.libraryId}');
+    out.add(item);
+  }
+
+  for (final r in recent) {
+    add(r);
+  }
+  for (final p in library) {
+    if (out.length >= 4) break;
+    add(
+      RecentPlaylist.library(
+        libraryId: p.id,
+        title: p.name,
+        artworkUrl: p.coverUrl ?? '',
+        tracks: p.tracks,
+      ),
+    );
+  }
+  return out;
+}
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -20,6 +59,12 @@ class HomeScreen extends ConsumerWidget {
     final trending = ref.watch(trendingProvider);
     final charts = ref.watch(topChartsProvider);
     final recent = ref.watch(recentlyPlayedProvider);
+    final recentPlaylists = ref.watch(recentPlaylistsProvider);
+    final libraryPlaylists = ref.watch(playlistsProvider);
+    final quickAccessPlaylists = _quickAccessPlaylists(
+      recent: recentPlaylists,
+      library: libraryPlaylists,
+    );
     final quickDownloads = ref.watch(quickDownloadsProvider);
     final online = ref.watch(isOnlineProvider);
     final user = ref.watch(authStateProvider).valueOrNull;
@@ -33,6 +78,7 @@ class HomeScreen extends ConsumerWidget {
         ref.invalidate(topChartsProvider);
         ref.invalidate(quickDownloadsProvider);
         ref.invalidate(recentlyPlayedProvider);
+        ref.read(syncRevisionProvider.notifier).state++;
         await Future.wait([
           ref.read(forYouProvider.future),
           ref.read(trendingProvider.future),
@@ -112,6 +158,10 @@ class HomeScreen extends ConsumerWidget {
             ),
           ),
           if (!online) const SliverToBoxAdapter(child: _OfflineSanctuary()),
+          if (quickAccessPlaylists.isNotEmpty)
+            SliverToBoxAdapter(
+              child: _QuickPlaylistsGrid(items: quickAccessPlaylists),
+            ),
           const SliverToBoxAdapter(child: SizedBox(height: Sp.sm)),
           SliverToBoxAdapter(
             child: SectionCarousel(
@@ -312,6 +362,135 @@ class _OfflineSanctuaryState extends State<_OfflineSanctuary>
               Text('· downloads only', style: text.labelSmall),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Spotify-style 2×2 quick access for recently played playlists.
+class _QuickPlaylistsGrid extends ConsumerWidget {
+  const _QuickPlaylistsGrid({required this.items});
+
+  final List<RecentPlaylist> items;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final shown = items.take(4).toList(growable: false);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Sp.lg, Sp.md, Sp.lg, Sp.sm),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          const gap = 8.0;
+          final tileW = (constraints.maxWidth - gap) / 2;
+          return Wrap(
+            spacing: gap,
+            runSpacing: gap,
+            children: [
+              for (final item in shown)
+                SizedBox(
+                  width: tileW,
+                  height: 56,
+                  child: _QuickPlaylistTile(item: item),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _QuickPlaylistTile extends StatelessWidget {
+  const _QuickPlaylistTile({required this.item});
+
+  final RecentPlaylist item;
+
+  void _open(BuildContext context) {
+    if (item.source == RecentPlaylistSource.library &&
+        item.libraryId != null &&
+        item.libraryId!.isNotEmpty) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => PlaylistDetailScreen(playlistId: item.libraryId!),
+        ),
+      );
+      return;
+    }
+    final url = item.browseUrl;
+    if (url != null && url.isNotEmpty) {
+      final seed = Track(
+        id: item.id,
+        title: item.title,
+        artist: '',
+        artworkUrl: item.artworkUrl,
+        duration: Duration.zero,
+        kind: TrackKind.playlist,
+        browseUrl: url,
+      );
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => PlaylistBrowseScreen(seed: seed),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Material(
+      color: AppColors.elevated,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _open(context),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 56,
+              height: 56,
+              child: item.artworkUrl.isEmpty
+                  ? ColoredBox(
+                      color: AppColors.elevatedHi,
+                      child: Icon(
+                        Icons.queue_music_rounded,
+                        color: Colors.white.withValues(alpha: 0.7),
+                        size: 28,
+                      ),
+                    )
+                  : CachedNetworkImage(
+                      imageUrl: item.artworkUrl,
+                      fit: BoxFit.cover,
+                      fadeInDuration: const Duration(milliseconds: 200),
+                      placeholder: (_, __) =>
+                          const ColoredBox(color: AppColors.elevatedHi),
+                      errorWidget: (_, __, ___) => ColoredBox(
+                        color: AppColors.elevatedHi,
+                        child: Icon(
+                          Icons.queue_music_rounded,
+                          color: Colors.white.withValues(alpha: 0.7),
+                          size: 28,
+                        ),
+                      ),
+                    ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Text(
+                  item.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.labelLarge?.copyWith(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w700,
+                    height: 1.15,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

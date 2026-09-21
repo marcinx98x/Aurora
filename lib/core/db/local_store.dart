@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../../domain/entities/playlist.dart';
+import '../../domain/entities/recent_playlist.dart';
 import '../../domain/entities/track.dart';
 
 /// Last queue, track index, and scrub position for resume-on-launch.
@@ -36,7 +37,9 @@ class LocalStore {
   static const _lyricsBox = 'lyrics';
   static const _statsBox = 'stats';
   static const _recentsKey = 'list';
+  static const _recentPlaylistsKey = 'playlists';
   static const _maxRecents = 30;
+  static const _maxRecentPlaylists = 4;
   static const _searchHistoryKey = 'search_history';
   static const _maxSearchHistory = 12;
   static const _playbackSessionKey = 'playback_session';
@@ -142,6 +145,26 @@ class LocalStore {
     list.insert(0, t);
     final trimmed = list.take(_maxRecents).map((e) => e.toJson()).toList();
     await _recents.put(_recentsKey, trimmed);
+  }
+
+  // --- Recent playlists (Home 2×2 quick access) -------------------------
+  List<RecentPlaylist> recentPlaylists() {
+    final raw = (_recents.get(_recentPlaylistsKey) as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => RecentPlaylist.fromJson(Map<dynamic, dynamic>.from(e)))
+        .toList(growable: false);
+  }
+
+  Future<void> pushRecentPlaylist(RecentPlaylist entry) async {
+    final list = recentPlaylists().toList()
+      ..removeWhere((e) => e.id == entry.id);
+    list.insert(0, entry);
+    final trimmed = list
+        .take(_maxRecentPlaylists)
+        .map((e) => e.toJson())
+        .toList(growable: false);
+    await _recents.put(_recentPlaylistsKey, trimmed);
   }
 
   // --- Search history ----------------------------------------------------

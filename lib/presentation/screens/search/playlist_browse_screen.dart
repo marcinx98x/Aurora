@@ -6,6 +6,7 @@ import '../../../domain/entities/track.dart';
 import '../../state/player_controller.dart';
 import '../../state/playlist_controller.dart';
 import '../../state/providers.dart';
+import '../../state/recent_playlists.dart';
 import '../../widgets/artwork.dart';
 import '../../widgets/track_tile.dart';
 import '../library/add_to_playlist_sheet.dart';
@@ -131,9 +132,17 @@ class PlaylistBrowseScreen extends ConsumerWidget {
                           },
                         ),
                         FilledButton.icon(
-                          onPressed: () => ref
-                              .read(playerControllerProvider.notifier)
-                              .playQueue(tracks),
+                          onPressed: () async {
+                            await recordYoutubePlaylistPlay(
+                              ref,
+                              seed: seed,
+                              title: title,
+                              tracks: tracks,
+                            );
+                            ref
+                                .read(playerControllerProvider.notifier)
+                                .playQueue(tracks);
+                          },
                           icon: const Icon(Icons.play_arrow_rounded),
                           label: const Text('Play all'),
                         ),
@@ -152,9 +161,17 @@ class PlaylistBrowseScreen extends ConsumerWidget {
                   itemCount: tracks.length,
                   itemBuilder: (_, i) => TrackTile(
                     track: tracks[i],
-                    onTap: () => ref
-                        .read(playerControllerProvider.notifier)
-                        .playQueue(tracks, startAt: i),
+                    onTap: () async {
+                      await recordYoutubePlaylistPlay(
+                        ref,
+                        seed: seed,
+                        title: title,
+                        tracks: tracks,
+                      );
+                      ref
+                          .read(playerControllerProvider.notifier)
+                          .playQueue(tracks, startAt: i);
+                    },
                     trailing: IconButton(
                       icon: const Icon(
                         Icons.add_circle_outline_rounded,

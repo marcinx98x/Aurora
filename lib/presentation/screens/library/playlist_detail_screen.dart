@@ -5,6 +5,7 @@ import '../../../core/theme/app_spacing.dart';
 import '../../../core/utils/formatters.dart';
 import '../../state/playlist_controller.dart';
 import '../../state/player_controller.dart';
+import '../../state/recent_playlists.dart';
 import '../../widgets/artwork.dart';
 import '../../widgets/track_tile.dart';
 
@@ -92,17 +93,23 @@ class PlaylistDetailScreen extends ConsumerWidget {
                   IconButton(
                     onPressed: tracks.isEmpty
                         ? null
-                        : () => ref
-                            .read(playerControllerProvider.notifier)
-                            .playQueue(tracks, startAt: 0),
+                        : () async {
+                            await recordLibraryPlaylistPlay(ref, playlist);
+                            ref
+                                .read(playerControllerProvider.notifier)
+                                .playQueue(tracks, startAt: 0);
+                          },
                     icon: const Icon(Icons.shuffle_rounded),
                     color: AppColors.textSecondary,
                   ),
                   _PlayAllButton(
                     enabled: tracks.isNotEmpty,
-                    onTap: () => ref
-                        .read(playerControllerProvider.notifier)
-                        .playQueue(tracks, startAt: 0),
+                    onTap: () async {
+                      await recordLibraryPlaylistPlay(ref, playlist);
+                      ref
+                          .read(playerControllerProvider.notifier)
+                          .playQueue(tracks, startAt: 0);
+                    },
                   ),
                 ],
               ),
@@ -134,9 +141,12 @@ class PlaylistDetailScreen extends ConsumerWidget {
                 child: TrackTile(
                   track: tracks[i],
                   active: playing?.id == tracks[i].id,
-                  onTap: () => ref
-                      .read(playerControllerProvider.notifier)
-                      .playQueue(tracks, startAt: i),
+                  onTap: () async {
+                    await recordLibraryPlaylistPlay(ref, playlist);
+                    ref
+                        .read(playerControllerProvider.notifier)
+                        .playQueue(tracks, startAt: i);
+                  },
                 ),
               ),
             ),

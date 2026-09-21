@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/db/local_store.dart';
 import '../../data/datasources/youtube_account_api.dart';
 import '../../data/repositories/api_music_repository.dart';
+import '../../domain/entities/recent_playlist.dart';
 import '../../domain/entities/track.dart';
 import '../../domain/repositories/music_repository.dart';
 import 'auth_controller.dart';
@@ -115,6 +116,12 @@ final recentlyPlayedProvider = FutureProvider<List<Track>>(
     return ref.watch(musicRepositoryProvider).recentlyPlayed();
   },
 );
+
+/// Up to 4 MRU playlists for the Home quick-access grid.
+final recentPlaylistsProvider = Provider<List<RecentPlaylist>>((ref) {
+  ref.watch(syncRevisionProvider);
+  return ref.watch(localStoreProvider).recentPlaylists();
+});
 
 final topChartsProvider = FutureProvider<List<Track>>(
   (ref) => ref.watch(musicRepositoryProvider).topCharts(),

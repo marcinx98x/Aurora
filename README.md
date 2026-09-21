@@ -56,7 +56,7 @@ Flutter app  ──HTTP──▶  FastAPI + yt-dlp  ──▶  YouTube
 - **Crossfade**, 2–12 s, adjustable.
 - **Remember playback position** (Settings → Audio, on by default) — after closing the app, the **mini-player** reappears immediately with the last track, artwork, and progress bar. Audio loads only when you press Play and resumes from the saved scrub position. Session data stays on-device (not synced to the server).
 - **Sleep timer**: 5–60 min presets or **End of track**, with a 10-second fade-out. Open it from the **⋯** menu on the Now Playing screen.
-- 5-band **equalizer**, playback **speed**, **output picker**, right-edge **volume drag HUD**.
+- 5-band **equalizer**, playback **speed**, **audio output** sheet on Now Playing (lists this phone, wired headphones, and bonded Bluetooth by name; tap connects/disconnects via system A2DP — the OS owns media routing; **More** opens Bluetooth settings to scan/pair), right-edge **volume drag HUD**.
 
 ### <img src="docs/icons/player.svg" width="18" align="top"> The Now-Playing screen
 - Full-screen layout: blurred artwork behind a colour veil derived from the cover.
